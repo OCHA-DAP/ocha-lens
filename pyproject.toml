@@ -1,0 +1,97 @@
+#########################
+# Project Configuration #
+#########################
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ocha-lens"
+description = "Utilities for standard climate-related data analysis"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Hannah Ker", email = "hannah.ker@un.org" },
+    { name = "Tristan Downing", email = "tristan.downing@un.org" }
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+dependencies = [
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.9.6",
+    "pre-commit>=3.8.0",
+    "python-dotenv>=1.0.1",
+    "pytest"
+]
+docs = [
+    "sphinx>=7.1.0",
+    "sphinx-copybutton>=0.5.0",
+    "furo>=2024.1.29",
+    "myst-parser>=2.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/OCHA-DAP/ocha-lens"
+Repository = "https://github.com/OCHA-DAP/ocha-lens.git"
+"Bug Tracker" = "https://github.com/OCHA-DAP/ocha-lens/issues"
+
+#########
+# Tests #
+#########
+
+[tool.pytest.ini_options]
+minversion = "6.0"          # Requires pytest version 6.0 or higher
+addopts = "-ra"          # Default command line options for pytest
+testpaths = [               # Directories to look for tests
+    "tests",
+]
+
+#########
+# Hatch #
+#########
+
+# Build
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ocha_lens"]
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/ocha_lens/_version.py"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+# Versioning
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+local_scheme = "no-local-version"
+version_scheme = "python-simplified-semver"
+
+# Static code analysis
+
+[tool.hatch.envs.hatch-static-analysis]
+dependencies = ["ruff==0.9.6"]
+
+[tool.hatch.envs.hatch-static-analysis.scripts]
+format-check = ["ruff format --config ruff.toml --check --diff {args:.}",]
+format-fix = ["ruff format --config ruff.toml {args:.}",]
+lint-check = ["ruff check --config ruff.toml {args:.}",]
+lint-fix = ["ruff check --config ruff.toml --fix {args:.}",]
