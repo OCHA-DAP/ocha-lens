@@ -39,10 +39,10 @@ def download_ibtracs(
     url = (
         "https://www.ncei.noaa.gov/data/"
         "international-best-track-archive-for-climate-stewardship-ibtracs/"
-        f"v04r00/access/netcdf/IBTrACS.{dataset}.v04r00.nc"
+        f"v04r01/access/netcdf/IBTrACS.{dataset}.v04r01.nc"
     )
 
-    filename = f"IBTrACS.{dataset}.v04r00.nc"
+    filename = f"IBTrACS.{dataset}.v04r01.nc"
     download_path = Path(temp_dir) / filename
     urllib.request.urlretrieve(url, download_path)
 
@@ -117,7 +117,7 @@ def get_provisional_tracks(ds: xr.Dataset) -> pd.DataFrame:
     string_cols = ["sid", "track_type", "usa_agency", "basin", "nature"]
 
     ds_ = ds[usa_cols + other_cols]
-    provisional_mask = ds.track_type == b"PROVISIONAL"  # If stored as bytes
+    provisional_mask = ds_.track_type == b"PROVISIONAL"  # If stored as bytes
     ds_ = ds_.where(provisional_mask, drop=True)
     df = ds_.to_dataframe().reset_index()
     df = _convert_string_columns(df, string_cols)
