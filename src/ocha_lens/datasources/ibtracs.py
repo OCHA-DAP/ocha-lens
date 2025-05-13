@@ -267,7 +267,7 @@ def get_best_tracks(ds: xr.Dataset) -> pd.DataFrame:
             "lat": "latitude",
             "lon": "longitude",
             "wind": "wind_speed",
-            "gust": "guest_speed",
+            "gust": "gust_speed",
             "pres": "pressure",
             "rmw": "max_wind_radius",
             "roci": "last_closed_isobar_radius",
