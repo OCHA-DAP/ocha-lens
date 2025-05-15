@@ -320,13 +320,9 @@ def get_storms(ds: xr.Dataset) -> pd.DataFrame:
         "season",
         "name",
         "track_type",
+        "basin",
     ]
-    str_vars = [
-        "sid",
-        "name",
-        "track_type",
-        "usa_atcf_id",
-    ]
+    str_vars = ["sid", "name", "track_type", "usa_atcf_id", "basin"]
 
     ds_subset = ds[storm_cols]
     ds_subset[str_vars] = ds_subset[str_vars].astype(str)
@@ -343,7 +339,9 @@ def get_storms(ds: xr.Dataset) -> pd.DataFrame:
     df_grouped["storm_id"] = [
         str(uuid.uuid4()) for _ in range(len(df_grouped))
     ]
-    return df_grouped.rename(columns={"usa_atcf_id": "atcf_id"})
+    return df_grouped.rename(
+        columns={"usa_atcf_id": "atcf_id", "basin": "genesis_basin"}
+    )
 
 
 def normalize_radii(df, radii_cols=None):
