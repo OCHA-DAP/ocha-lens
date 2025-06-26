@@ -6,10 +6,14 @@ babel==2.17.0
     # via sphinx
 beautifulsoup4==4.13.4
     # via furo
-certifi==2025.4.26
-    # via requests
+certifi==2025.6.15
+    # via
+    #   netcdf4
+    #   requests
 cfgv==3.4.0
     # via pre-commit
+cftime==1.6.4.post1
+    # via netcdf4
 charset-normalizer==3.4.2
     # via requests
 distlib==0.3.9
@@ -22,7 +26,7 @@ filelock==3.18.0
     # via virtualenv
 furo==2024.8.6
     # via ocha-lens (pyproject.toml)
-identify==2.6.10
+identify==2.6.12
     # via pre-commit
 idna==3.10
     # via requests
@@ -46,10 +50,14 @@ mdurl==0.1.2
     # via markdown-it-py
 myst-parser==4.0.1
     # via ocha-lens (pyproject.toml)
+netcdf4==1.7.2
+    # via ocha-lens (pyproject.toml)
 nodeenv==1.9.1
     # via pre-commit
-numpy==2.2.5
+numpy==2.3.1
     # via
+    #   cftime
+    #   netcdf4
     #   pandas
     #   xarray
 packaging==25.0
@@ -57,25 +65,26 @@ packaging==25.0
     #   pytest
     #   sphinx
     #   xarray
-pandas==2.2.3
+pandas==2.3.0
     # via
     #   ocha-lens (pyproject.toml)
     #   xarray
-platformdirs==4.3.7
+platformdirs==4.3.8
     # via virtualenv
-pluggy==1.5.0
+pluggy==1.6.0
     # via pytest
 pre-commit==4.2.0
     # via ocha-lens (pyproject.toml)
-pygments==2.19.1
+pygments==2.19.2
     # via
     #   furo
+    #   pytest
     #   sphinx
-pytest==8.3.5
+pytest==8.4.1
     # via ocha-lens (pyproject.toml)
 python-dateutil==2.9.0.post0
     # via pandas
-python-dotenv==1.1.0
+python-dotenv==1.1.1
     # via ocha-lens (pyproject.toml)
 pytz==2025.2
     # via pandas
@@ -83,15 +92,15 @@ pyyaml==6.0.2
     # via
     #   myst-parser
     #   pre-commit
-requests==2.32.3
+requests==2.32.4
     # via sphinx
 roman-numerals-py==3.1.0
     # via sphinx
-ruff==0.11.8
+ruff==0.12.1
     # via ocha-lens (pyproject.toml)
 six==1.17.0
     # via python-dateutil
-snowballstemmer==2.2.0
+snowballstemmer==3.0.1
     # via sphinx
 soupsieve==2.7
     # via beautifulsoup4
@@ -118,13 +127,13 @@ sphinxcontrib-qthelp==2.0.0
     # via sphinx
 sphinxcontrib-serializinghtml==2.0.0
     # via sphinx
-typing-extensions==4.13.2
+typing-extensions==4.14.0
     # via beautifulsoup4
 tzdata==2025.2
     # via pandas
-urllib3==2.4.0
+urllib3==2.5.0
     # via requests
-virtualenv==20.31.1
+virtualenv==20.31.2
     # via pre-commit
-xarray==2025.4.0
+xarray==2025.6.1
     # via ocha-lens (pyproject.toml)
