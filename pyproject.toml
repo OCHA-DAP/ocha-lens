@@ -28,6 +28,9 @@ classifiers = [
 ]
 
 dependencies = [
+    "pandas>=2.2.2",
+    "xarray>=2024.7.0",
+    "netcdf4==1.7.2"
 ]
 dynamic = ["version"]
 
