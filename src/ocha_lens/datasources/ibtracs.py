@@ -149,7 +149,8 @@ def get_provisional_tracks(ds: xr.Dataset) -> pd.DataFrame:
     # TODO: Probably a bit overkill in the ids here (and also not really readable)
     # Should think about how to best improve
     result_df["point_id"] = [str(uuid.uuid4()) for _ in range(len(result_df))]
-    return result_df
+    df = _convert_track_column_types(result_df)
+    return df
 
 
 def get_best_tracks(ds: xr.Dataset) -> pd.DataFrame:
@@ -287,7 +288,8 @@ def get_best_tracks(ds: xr.Dataset) -> pd.DataFrame:
     result_df = result_df.dropna(
         subset=["latitude", "longitude", "valid_time", "sid"]
     )
-    return result_df
+    df = _convert_track_column_types(result_df)
+    return df
 
 
 def get_storms(ds: xr.Dataset) -> pd.DataFrame:
@@ -339,6 +341,7 @@ def get_storms(ds: xr.Dataset) -> pd.DataFrame:
     df_grouped["storm_id"] = [
         str(uuid.uuid4()) for _ in range(len(df_grouped))
     ]
+    df_grouped["season"] = df_grouped["season"].astype(int)
     return df_grouped.rename(
         columns={"usa_atcf_id": "atcf_id", "basin": "genesis_basin"}
     )
@@ -416,3 +419,17 @@ def _convert_string_columns(
                 lambda x: x.decode("utf-8") if isinstance(x, bytes) else x
             )
     return df
+
+
+def _convert_track_column_types(df):
+    df_ = df.copy()
+    df_ = df_.round({"latitude": 2, "longitude": 2})
+    df_["valid_time"] = df_["valid_time"].dt.round("min")
+    for col in [
+        "wind_speed",
+        "pressure",
+        "last_closed_isobar_radius",
+        "last_closed_isobar_pressure",
+    ]:
+        df_[col] = df[col].astype("Int64")
+    return df_
