@@ -9,6 +9,38 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+IBTRACS_CONFIG = {
+    "tracks": {
+        "sid": "object",
+        "provider": "object",
+        "basin": "object",
+        "nature": "object",
+        "valid_time": "datetime64[ns]",
+        "latitude": "float64",
+        "longitude": "float64",
+        "wind_speed": "float64",
+        "gust_speed": "float64",
+        "pressure": "Int64",
+        "max_wind_radius": "float64",
+        "last_closed_isobar_radius": "Int64",
+        "last_closed_isobar_pressure": "Int64",
+        "quadrant_radius_34": "object",  # Lists
+        "quadrant_radius_50": "object",  # Lists
+        "quadrant_radius_64": "object",  # Lists
+        "point_id": "object",
+    },
+    "storms": {
+        "sid": "object",
+        "atcf_id": "object",
+        "number": "int64",
+        "season": "int64",
+        "name": "object",
+        "genesis_basin": "object",
+        "provisional": "bool",
+        "storm_id": "object",
+    },
+}
+
 
 def download_ibtracs(
     dataset: Literal["ALL", "ACTIVE", "last3years"] = "ALL",
@@ -118,6 +150,11 @@ def get_provisional_tracks(ds: xr.Dataset) -> pd.DataFrame:
 
     ds_ = ds[usa_cols + other_cols]
     provisional_mask = ds_.track_type == b"PROVISIONAL"  # If stored as bytes
+
+    if not provisional_mask.any():
+        schema = IBTRACS_CONFIG["tracks"]
+        return pd.DataFrame(columns=list(schema.keys())).astype(schema)
+
     ds_ = ds_.where(provisional_mask, drop=True)
     df = ds_.to_dataframe().reset_index()
     df = _convert_string_columns(df, string_cols)
@@ -209,6 +246,9 @@ def get_best_tracks(ds: xr.Dataset) -> pd.DataFrame:
     # Seems like checking the track_type is redundant here since provisional tracks
     # also don't have an assigned wmo_agency, but still good to be sure
     df = df[(df["wmo_agency"] != b"") & (df["track_type"] != b"PROVISIONAL")]
+    if len(df) == 0:
+        schema = IBTRACS_CONFIG["tracks"]
+        return pd.DataFrame(columns=list(schema.keys())).astype(schema)
 
     df = _convert_string_columns(df, string_cols)
 
