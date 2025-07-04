@@ -16,12 +16,12 @@ IBTRACS_CONFIG = {
         "basin": "object",
         "nature": "object",
         "valid_time": "datetime64[ns]",
-        "latitude": "float64",
-        "longitude": "float64",
-        "wind_speed": "float64",
-        "gust_speed": "float64",
+        "latitude": "float32",
+        "longitude": "float32",
+        "wind_speed": "Int64",
+        "gust_speed": "Int64",
         "pressure": "Int64",
-        "max_wind_radius": "float64",
+        "max_wind_radius": "Int64",
         "last_closed_isobar_radius": "Int64",
         "last_closed_isobar_pressure": "Int64",
         "quadrant_radius_34": "object",  # Lists
@@ -143,6 +143,7 @@ def get_provisional_tracks(ds: xr.Dataset) -> pd.DataFrame:
         "usa_rmw",
         "usa_roci",
         "usa_poci",
+        "usa_gust",
     ]
 
     other_cols = ["sid", "track_type", "usa_agency", "basin", "nature"]
@@ -172,6 +173,7 @@ def get_provisional_tracks(ds: xr.Dataset) -> pd.DataFrame:
             "usa_lon": "longitude",
             "usa_wind": "wind_speed",
             "usa_pres": "pressure",
+            "usa_gust": "gust_speed",
             "usa_rmw": "max_wind_radius",
             "usa_roci": "last_closed_isobar_radius",
             "usa_poci": "last_closed_isobar_pressure",
@@ -467,9 +469,16 @@ def _convert_track_column_types(df):
     df_["valid_time"] = df_["valid_time"].dt.round("min")
     for col in [
         "wind_speed",
+        "gust_speed",
         "pressure",
         "last_closed_isobar_radius",
         "last_closed_isobar_pressure",
+        "max_wind_radius",
     ]:
         df_[col] = df[col].astype("Int64")
+    for col in [
+        "latitude",
+        "longitude",
+    ]:
+        df_[col] = df[col].astype("float32")
     return df_
