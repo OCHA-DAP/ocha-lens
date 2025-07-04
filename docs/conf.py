@@ -40,6 +40,8 @@ html_theme_options = {
     ],
     "light_css_variables": {
         "color-sidebar-background": "#f8f9fb",
+        "color-brand-primary": "#007ce0",
+        "color-brand-content": "#007ce0",
     },
 }
 
