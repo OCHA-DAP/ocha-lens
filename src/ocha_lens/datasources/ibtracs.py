@@ -32,7 +32,7 @@ IBTRACS_CONFIG = {
     "storms": {
         "sid": "object",
         "atcf_id": "object",
-        "number": "int64",
+        "number": "int16",
         "season": "int64",
         "name": "object",
         "genesis_basin": "object",
