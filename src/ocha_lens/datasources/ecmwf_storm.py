@@ -1,11 +1,12 @@
 import io
 import logging
 import os
+import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import lxml.etree as et
+import ocha_stratus as stratus
 import pandas as pd
 import requests
 from dateutil import rrule
@@ -19,7 +20,13 @@ BASIN_MAPPING = {
 }
 
 
-def download_hindcasts(date, save_dir):
+def download_hindcasts(
+    date,
+    save_dir="xml",
+    use_cache=False,
+    skip_if_missing=False,
+    blob_container="storm",
+):
     """
     Downloads historical ECMWF data from TIGGE in XML format
     https://rda.ucar.edu/datasets/d330003/dataaccess/#
@@ -33,17 +40,43 @@ def download_hindcasts(date, save_dir):
         f"ifs_glob_{server}_all_glo.xml"
     )
     filename = dspath + file
-    outfile = save_dir / "xml" / os.path.basename(filename)
+    outfile = Path(save_dir) / "raw" / os.path.basename(filename)
+
     # Don't download if exists already
-    if outfile.exists():
-        logger.debug(f"{file} already exists")
-        return outfile
-    req = requests.get(filename, allow_redirects=True)
+    if use_cache:
+        print(f"using cache for {outfile}")
+        if outfile.exists():
+            print(f"{file} already exists locally")
+            return outfile
+        elif (
+            stratus.get_container_client(blob_container)
+            .get_blob_client(str(outfile))
+            .exists()
+        ):
+            print(f"{file} already exists")
+            return outfile
+
+    # Exit if we don't want to download from the server
+    if skip_if_missing:
+        print(f"file isn't saved! {file}")
+        return
+
+    # Now download
+    try:
+        req = requests.get(filename, timeout=(10, None))
+    except Exception as e:
+        logger.error(e)
+        return
     if req.status_code != 200:
         logger.debug(f"{file} invalid URL")
         return
     logger.debug(f"{file} downloading")
     open(outfile, "wb").write(req.content)
+    if blob_container:
+        logger.debug("Saving to blob")
+        stratus.upload_blob_data(
+            req.content, str(outfile), container_name=blob_container
+        )
     return outfile
 
 
@@ -51,7 +84,10 @@ def download_hindcasts(date, save_dir):
 def load_hindcasts(
     start_date: datetime = datetime(2025, 1, 1).date(),
     end_date=datetime.now().date(),
-    temp_dir: Optional[str] = None,
+    temp_dir="xml",
+    use_cache=True,
+    skip_if_missing=False,
+    blob_container="storm",
 ):
     save_dir = Path(temp_dir) if temp_dir else Path("temp")
     os.makedirs(save_dir, exist_ok=True)
@@ -66,7 +102,9 @@ def load_hindcasts(
     dfs = []
     for date in date_list:
         logger.debug(f"Processing for {date}...")
-        raw_file = download_hindcasts(date, save_dir)
+        raw_file = download_hindcasts(
+            date, save_dir, use_cache, skip_if_missing, blob_container
+        )
         if raw_file:
             dfs.append(
                 _process_cxml_to_df(
@@ -94,6 +132,7 @@ def get_storms(df):
 
 def get_forecast_tracks(df):
     df_tracks = df.drop(columns=["provider", "name", "number"])
+    df_tracks["point_id"] = [str(uuid.uuid4()) for _ in range(len(df_tracks))]
     return df_tracks
 
 
@@ -102,8 +141,23 @@ def _process_cxml_to_df(cxml_path: str, xsl_path: str = None):
     if xsl_path is None:
         xsl_path = "data/cxml_ecmwf_transformation.xsl"
 
+    cxml_data = cxml_path
+    if not cxml_path.exists():
+        cxml_data = stratus.load_blob_data(
+            str(cxml_path), container_name="storm"
+        )
+
     xsl = et.parse(str(xsl_path))
-    xml = et.parse(str(cxml_path))
+    # Handle bytes, string path, and Path object inputs
+    if isinstance(cxml_data, bytes):
+        xml = et.parse(io.BytesIO(cxml_data))
+    elif isinstance(cxml_data, (str, Path)):
+        xml = et.parse(str(cxml_data))
+    else:
+        raise ValueError(
+            "cxml_data must be bytes, a file path string, or a Path object"
+        )
+
     transformer = et.XSLT(xsl)
     csv_string = str(transformer(xml))
 
