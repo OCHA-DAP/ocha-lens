@@ -5,19 +5,33 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+import geopandas as gpd
 import lxml.etree as et
 import ocha_stratus as stratus
 import pandas as pd
 import requests
 from dateutil import rrule
+from shapely.geometry import Point
 
 logger = logging.getLogger(__name__)
 
+# TEMP
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+handler.setLevel(logging.INFO)
+logger.addHandler(handler)
+
+# TODO -- or is this even feasible?
 BASIN_MAPPING = {
     "Northwest Pacific": "WP",
     "Southwest Pacific": "SP",
     "Northeast Pacific": "EP",
+    "North Atlantic": "NA",
+    "North Indian": "NI",
 }
+
+
+CXML2CSV_XSL = Path(__file__).parent / "data/cxml_ecmwf_transformation.xsl"
 
 
 def download_hindcasts(
@@ -44,21 +58,21 @@ def download_hindcasts(
 
     # Don't download if exists already
     if use_cache:
-        print(f"using cache for {outfile}")
+        logger.debug(f"using cache for {outfile}")
         if outfile.exists():
-            print(f"{file} already exists locally")
+            logger.debug(f"{file} already exists locally")
             return outfile
         elif (
             stratus.get_container_client(blob_container)
             .get_blob_client(str(outfile))
             .exists()
         ):
-            print(f"{file} already exists")
+            logger.debug(f"{file} already exists")
             return outfile
 
     # Exit if we don't want to download from the server
     if skip_if_missing:
-        print(f"file isn't saved! {file}")
+        logger.debug(f"file isn't saved! {file}")
         return
 
     # Now download
@@ -101,45 +115,74 @@ def load_hindcasts(
 
     dfs = []
     for date in date_list:
-        logger.debug(f"Processing for {date}...")
+        logger.info(f"Processing for {date}...")
         raw_file = download_hindcasts(
             date, save_dir, use_cache, skip_if_missing, blob_container
         )
         if raw_file:
-            dfs.append(
-                _process_cxml_to_df(
-                    raw_file, xsl_path="temp/cxml_ecmwf_transformation.xsl"
-                )
-            )
+            df = _process_cxml_to_df(raw_file)
+            if df is not None:
+                dfs.append(df)
 
     return pd.concat(dfs)
 
 
 def get_storms(df):
-    df_storms = (
-        df.groupby("storm_id")[
-            ["number", "name", "basin", "valid_time", "provider"]
+    # First let's get all the distinct forecasts
+    df = df.sort_values(by="issued_time", ascending=False)
+    df_forecasts = (
+        df.groupby("id")[
+            [
+                "number",
+                "name",
+                "basin",
+                "valid_time",
+                "issued_time",
+                "provider",
+            ]
         ]
         .first()
         .reset_index()
     )
-    df_storms["season"] = df_storms.valid_time.dt.year
-    df_storms = df_storms.rename(columns={"basin": "genesis_basin"}).drop(
-        columns=["valid_time"]
+    df_forecasts = _convert_season(df_forecasts).rename(
+        columns={"basin": "genesis_basin"}
+    )
+    df_forecasts = df_forecasts.sort_values(by="issued_time", ascending=False)
+    df_forecasts["name"] = df_forecasts["name"].fillna(df_forecasts["number"])
+
+    # Now group together any forecasts that look like they're from the same storm
+    df_storms = (
+        df_forecasts.groupby(["season", "name", "genesis_basin"])
+        .first()
+        .reset_index()
+    ).drop(columns="valid_time")
+    df_storms["storm_id"] = df_storms["name"].str.cat(
+        [df_storms["genesis_basin"], df_storms["season"].astype(str)], sep="_"
     )
     return df_storms
 
 
-def get_forecast_tracks(df):
-    df_tracks = df.drop(columns=["provider", "name", "number"])
+def get_forecast_tracks(df, df_storms):
+    df_tracks = df.merge(df_storms[["id", "storm_id"]])
+    df_tracks = df_tracks.drop(columns=["provider", "name", "number"])
     df_tracks["point_id"] = [str(uuid.uuid4()) for _ in range(len(df_tracks))]
-    return df_tracks
+    gdf_tracks = gpd.GeoDataFrame(
+        df_tracks,
+        geometry=[
+            Point(xy) for xy in zip(df_tracks.longitude, df_tracks.latitude)
+        ],
+        crs="EPSG:4326",
+    )
+    gdf_tracks = gdf_tracks.drop(["latitude", "longitude"], axis=1)
+    return gdf_tracks
 
 
 def _process_cxml_to_df(cxml_path: str, xsl_path: str = None):
-    """Read a cxml v1.1 file; may not work on newer specs."""
+    """Adapted from
+    https://github.com/CLIMADA-project/climada_petals/blob/6381a3c90dc9f1acd1e41c95f826d7dd7f623fff/climada_petals/hazard/tc_tracks_forecast.py#L627.  # noqa
+    """
     if xsl_path is None:
-        xsl_path = "data/cxml_ecmwf_transformation.xsl"
+        xsl_path = CXML2CSV_XSL
 
     cxml_data = cxml_path
     if not cxml_path.exists():
@@ -149,14 +192,18 @@ def _process_cxml_to_df(cxml_path: str, xsl_path: str = None):
 
     xsl = et.parse(str(xsl_path))
     # Handle bytes, string path, and Path object inputs
-    if isinstance(cxml_data, bytes):
-        xml = et.parse(io.BytesIO(cxml_data))
-    elif isinstance(cxml_data, (str, Path)):
-        xml = et.parse(str(cxml_data))
-    else:
-        raise ValueError(
-            "cxml_data must be bytes, a file path string, or a Path object"
-        )
+    try:
+        if isinstance(cxml_data, bytes):
+            xml = et.parse(io.BytesIO(cxml_data))
+        elif isinstance(cxml_data, (str, Path)):
+            xml = et.parse(str(cxml_data))
+        else:
+            raise ValueError(
+                "cxml_data must be bytes, a file path string, or a Path object"
+            )
+    except Exception as e:
+        logger.error(f"Error parsing cxml: {e}")
+        return
 
     transformer = et.XSLT(xsl)
     csv_string = str(transformer(xml))
@@ -179,22 +226,39 @@ def _process_cxml_to_df(cxml_path: str, xsl_path: str = None):
     # Remove all ensemble forecasts
     df = df[df.type == "forecast"]
 
-    df["basin"] = df["basin"].map(BASIN_MAPPING)
-
+    # TODO: Confirm that lastClosedIsobar and maximumWindRadius are always null
     df = df.rename(
         columns={
-            "id": "storm_id",
             "baseTime": "issued_time",
             "validTime": "valid_time",
             "hour": "leadtime",
             "cycloneName": "name",
             "cycloneNumber": "number",
             "minimumPressure": "pressure",
-            "lastClosedIsobar": "last_closed_isobar_radius",
             "maximumWind": "wind_speed",
-            "maximumWindRadius": "maximum_wind_radius",
             "origin": "provider",
         }
-    ).drop(columns=["disturbance_no", "type", "member", "perturb"])
-
+    ).drop(
+        columns=[
+            "disturbance_no",
+            "type",
+            "member",
+            "perturb",
+            "lastClosedIsobar",
+            "maximumWindRadius",
+        ]
+    )
     return df
+
+
+def _convert_season(df):
+    df_ = df.copy()
+    df_["season"] = df_["valid_time"].dt.year
+    southern_hemisphere_mask = (
+        df_["basin"].str.lower().str.contains("south", na=False)
+    )
+    july_1_mask = df_["valid_time"].dt.month >= 7
+    df_.loc[southern_hemisphere_mask & july_1_mask, "season"] = (
+        df_.loc[southern_hemisphere_mask & july_1_mask, "season"] + 1
+    )
+    return df_
