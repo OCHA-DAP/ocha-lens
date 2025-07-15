@@ -5,6 +5,7 @@
   Caveat: Omitted double ticks " to demarcate CSV fields; running on faith/the
     assumption that no commas appear in any fields.
   Author: Jan Hartman
+  Updated: Added conditional logic for coordinates that may already have negative signs
 -->
 
 <xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
@@ -59,7 +60,8 @@
 
     <xsl:variable name="latitude">
       <xsl:choose>
-        <xsl:when test="latitude/@units = 'deg S'">
+        <!-- If it's marked as deg S and doesn't already start with minus sign -->
+        <xsl:when test="latitude/@units = 'deg S' and not(starts-with(latitude, '-'))">
           <xsl:value-of select="concat('-', latitude)" />
         </xsl:when>
         <xsl:otherwise>
@@ -70,7 +72,8 @@
 
     <xsl:variable name="longitude">
       <xsl:choose>
-        <xsl:when test="longitude/@units = 'deg W'">
+        <!-- If it's marked as deg W and doesn't already start with minus sign -->
+        <xsl:when test="longitude/@units = 'deg W' and not(starts-with(longitude, '-'))">
           <xsl:value-of select="concat('-', longitude)" />
         </xsl:when>
         <xsl:otherwise>

@@ -31,9 +31,7 @@ BASIN_MAPPING = {
 }
 
 
-CXML2CSV_XSL = (
-    Path(__file__).parent / "data/cxml_ecmwf_transformation_updated.xsl"
-)
+CXML2CSV_XSL = Path(__file__).parent / "data/cxml_ecmwf_transformation.xsl"
 
 
 def _get_raw_filename(date):
