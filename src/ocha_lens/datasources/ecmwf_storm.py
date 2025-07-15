@@ -31,20 +31,12 @@ BASIN_MAPPING = {
 }
 
 
-CXML2CSV_XSL = Path(__file__).parent / "data/cxml_ecmwf_transformation.xsl"
+CXML2CSV_XSL = (
+    Path(__file__).parent / "data/cxml_ecmwf_transformation_updated.xsl"
+)
 
 
-def download_hindcasts(
-    date,
-    save_dir="xml",
-    use_cache=False,
-    skip_if_missing=False,
-    blob_container="storm",
-):
-    """
-    Downloads historical ECMWF data from TIGGE in XML format
-    https://rda.ucar.edu/datasets/d330003/dataaccess/#
-    """
+def _get_raw_filename(date):
     dspath = "https://data.rda.ucar.edu/d330003/"
     ymd = date.strftime("%Y%m%d")
     ymdhms = date.strftime("%Y%m%d%H%M%S")
@@ -53,44 +45,72 @@ def download_hindcasts(
         f"ecmf/{date.year}/{ymd}/z_tigge_c_ecmf_{ymdhms}_"
         f"ifs_glob_{server}_all_glo.xml"
     )
-    filename = dspath + file
-    outfile = Path(save_dir) / "raw" / os.path.basename(filename)
+    return dspath + file
+
+
+def download_hindcasts(
+    date,
+    save_dir="storm",
+    use_cache=False,
+    skip_if_missing=False,
+    stage="local",  # dev, prod, or local
+):
+    """
+    Downloads historical ECMWF data from TIGGE in XML format
+    https://rda.ucar.edu/datasets/d330003/dataaccess/#
+    """
+
+    filename = _get_raw_filename(date)
+    base_filename = os.path.basename(filename)
+    outfile = Path(save_dir) / "xml" / "raw" / os.path.basename(base_filename)
 
     # Don't download if exists already
     if use_cache:
         logger.debug(f"using cache for {outfile}")
-        if outfile.exists():
-            logger.debug(f"{file} already exists locally")
-            return outfile
-        elif (
-            stratus.get_container_client(blob_container)
-            .get_blob_client(str(outfile))
-            .exists()
-        ):
-            logger.debug(f"{file} already exists")
-            return outfile
+        if stage == "local":
+            if outfile.exists():
+                logger.debug(f"{base_filename} already exists locally")
+                return outfile
+        elif stage == "dev" or stage == "prod":
+            if (
+                stratus.get_container_client(save_dir, stage=stage)
+                .get_blob_client(str(outfile))
+                .exists()
+            ):
+                logger.debug(f"{base_filename} already exists in blob")
+                return outfile
+        else:
+            logger.error(f"Invalid stage: {stage}")
+            return
 
-    # Exit if we don't want to download from the server
+    # If file doesn't exist and we don't want to check the server
     if skip_if_missing:
-        logger.debug(f"file isn't saved! {file}")
+        logger.debug(f"file isn't saved! {base_filename}")
         return
 
     # Now download
     try:
+        logger.debug(f"{base_filename} downloading")
         req = requests.get(filename, timeout=(10, None))
     except Exception as e:
         logger.error(e)
         return
     if req.status_code != 200:
-        logger.debug(f"{file} invalid URL")
+        logger.debug(f"{base_filename} invalid URL")
         return
-    logger.debug(f"{file} downloading")
-    open(outfile, "wb").write(req.content)
-    if blob_container:
-        logger.debug("Saving to blob")
+
+    if stage == "local":
+        logger.debug("saving locally")
+        outfile.parent.mkdir(parents=True, exist_ok=True)
+        open(outfile, "wb").write(req.content)
+    elif stage == "dev" or stage == "prod":
+        logger.debug(f"Saving to {stage} blob")
         stratus.upload_blob_data(
-            req.content, str(outfile), container_name=blob_container
+            req.content, str(outfile), container_name=save_dir, stage=stage
         )
+    else:
+        logger.error(f"Invalid stage: {stage}")
+        return
     return outfile
 
 
@@ -98,10 +118,10 @@ def download_hindcasts(
 def load_hindcasts(
     start_date: datetime = datetime(2025, 1, 1).date(),
     end_date=datetime.now().date(),
-    temp_dir="xml",
+    temp_dir="storm",
     use_cache=True,
     skip_if_missing=False,
-    blob_container="storm",
+    stage="dev",
 ):
     save_dir = Path(temp_dir) if temp_dir else Path("temp")
     os.makedirs(save_dir, exist_ok=True)
@@ -117,53 +137,45 @@ def load_hindcasts(
     for date in date_list:
         logger.info(f"Processing for {date}...")
         raw_file = download_hindcasts(
-            date, save_dir, use_cache, skip_if_missing, blob_container
+            date, save_dir, use_cache, skip_if_missing, stage
         )
         if raw_file:
             df = _process_cxml_to_df(raw_file)
             if df is not None:
                 dfs.append(df)
+    if len(dfs) > 0:
+        return pd.concat(dfs)
+    logger.error("No data available for input dates")
+    return
 
-    return pd.concat(dfs)
 
-
-def get_storms(df):
-    # First let's get all the distinct forecasts
-    df = df.sort_values(by="issued_time", ascending=False)
+def get_storms_and_tracks(df):
+    # We're only identifying storms that have names
+    df_ = df.dropna(subset="name")
+    df_ = _convert_season(df_)
+    df_["storm_id"] = df_["name"].str.cat(
+        [df_["basin"], df_["season"].astype(str)], sep="_"
+    )
+    df_ = df_.sort_values("issued_time")
     df_forecasts = (
-        df.groupby("id")[
-            [
-                "number",
-                "name",
-                "basin",
-                "valid_time",
-                "issued_time",
-                "provider",
-            ]
+        df_.groupby(["id", "issued_time", "name", "number"])[
+            ["storm_id", "provider", "season", "basin"]
         ]
         .first()
         .reset_index()
     )
-    df_forecasts = _convert_season(df_forecasts).rename(
-        columns={"basin": "genesis_basin"}
+
+    # Note that a single storm may have different numbers during its forecast lifecycle
+    # We're picking the one from the last forecast
+    df_storms = df_forecasts.sort_values(
+        "issued_time", ascending=False
+    ).drop_duplicates(subset=["storm_id"])
+    df_storms = df_storms.drop(columns=["id", "issued_time"])
+
+    # Where available, join the storm_ids on to the tracks
+    df_tracks = df.merge(
+        df_storms[["name", "basin", "season", "storm_id"]], how="left"
     )
-    df_forecasts = df_forecasts.sort_values(by="issued_time", ascending=False)
-    df_forecasts["name"] = df_forecasts["name"].fillna(df_forecasts["number"])
-
-    # Now group together any forecasts that look like they're from the same storm
-    df_storms = (
-        df_forecasts.groupby(["season", "name", "genesis_basin"])
-        .first()
-        .reset_index()
-    ).drop(columns="valid_time")
-    df_storms["storm_id"] = df_storms["name"].str.cat(
-        [df_storms["genesis_basin"], df_storms["season"].astype(str)], sep="_"
-    )
-    return df_storms
-
-
-def get_forecast_tracks(df, df_storms):
-    df_tracks = df.merge(df_storms[["id", "storm_id"]])
     df_tracks = df_tracks.drop(columns=["provider", "name", "number"])
     df_tracks["point_id"] = [str(uuid.uuid4()) for _ in range(len(df_tracks))]
     gdf_tracks = gpd.GeoDataFrame(
@@ -174,7 +186,8 @@ def get_forecast_tracks(df, df_storms):
         crs="EPSG:4326",
     )
     gdf_tracks = gdf_tracks.drop(["latitude", "longitude"], axis=1)
-    return gdf_tracks
+    assert len(gdf_tracks == len(df))
+    return df_storms, gdf_tracks
 
 
 def _process_cxml_to_df(cxml_path: str, xsl_path: str = None):
