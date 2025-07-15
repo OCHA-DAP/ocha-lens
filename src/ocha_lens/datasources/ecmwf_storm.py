@@ -16,9 +16,9 @@ from shapely.geometry import Point
 logger = logging.getLogger(__name__)
 
 # TEMP
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 handler = logging.StreamHandler()
-handler.setLevel(logging.INFO)
+handler.setLevel(logging.DEBUG)
 logger.addHandler(handler)
 
 # TODO -- or is this even feasible?
@@ -48,7 +48,8 @@ def download_hindcasts(
 
     filename = _get_raw_filename(date)
     base_filename = os.path.basename(filename)
-    outfile = Path(save_dir) / "xml" / "raw" / os.path.basename(base_filename)
+    base_outfile = f"xml/raw/{os.path.basename(base_filename)}"
+    outfile = Path(save_dir) / base_outfile
 
     # Don't download if exists already
     if use_cache:
@@ -60,7 +61,7 @@ def download_hindcasts(
         elif stage == "dev" or stage == "prod":
             if (
                 stratus.get_container_client(save_dir, stage=stage)
-                .get_blob_client(str(outfile))
+                .get_blob_client(base_outfile)
                 .exists()
             ):
                 logger.debug(f"{base_filename} already exists in blob")
@@ -92,7 +93,7 @@ def download_hindcasts(
     elif stage == "dev" or stage == "prod":
         logger.debug(f"Saving to {stage} blob")
         stratus.upload_blob_data(
-            req.content, str(outfile), container_name=save_dir, stage=stage
+            req.content, base_outfile, container_name=save_dir, stage=stage
         )
     else:
         logger.error(f"Invalid stage: {stage}")
@@ -126,7 +127,7 @@ def load_hindcasts(
             date, save_dir, use_cache, skip_if_missing, stage
         )
         if raw_file:
-            df = _process_cxml_to_df(raw_file)
+            df = _process_cxml_to_df(raw_file, stage, save_dir)
             if df is not None:
                 dfs.append(df)
     if len(dfs) > 0:
@@ -178,35 +179,32 @@ def get_storms_and_tracks(df):
     return df_storms, gdf_tracks
 
 
-def _process_cxml_to_df(cxml_path: str, xsl_path: str = None):
+def _process_cxml_to_df(cxml_path: str, stage, save_dir, xsl_path: str = None):
     """Adapted from
     https://github.com/CLIMADA-project/climada_petals/blob/6381a3c90dc9f1acd1e41c95f826d7dd7f623fff/climada_petals/hazard/tc_tracks_forecast.py#L627.  # noqa
     """
     if xsl_path is None:
         xsl_path = CXML2CSV_XSL
-
-    cxml_data = cxml_path
-    if not cxml_path.exists():
-        cxml_data = stratus.load_blob_data(
-            str(cxml_path), container_name="storm"
-        )
-
     xsl = et.parse(str(xsl_path))
-    # Handle bytes, string path, and Path object inputs
+    transformer = et.XSLT(xsl)
+
     try:
-        if isinstance(cxml_data, bytes):
-            xml = et.parse(io.BytesIO(cxml_data))
-        elif isinstance(cxml_data, (str, Path)):
-            xml = et.parse(str(cxml_data))
-        else:
-            raise ValueError(
-                "cxml_data must be bytes, a file path string, or a Path object"
+        if stage == "local":
+            xml = et.parse(str(cxml_path))
+        elif stage == "dev" or stage == "prod":
+            # Remove the first directory level since this is the container
+            cxml_path = str(Path(*Path(cxml_path).parts[1:]))
+            cxml_data = stratus.load_blob_data(
+                cxml_path, container_name=save_dir
             )
+            xml = et.parse(io.BytesIO(cxml_data))
+        else:
+            logger.error(f"Invalid stage: {stage}")
+            return
     except Exception as e:
         logger.error(f"Error parsing cxml: {e}")
         return
 
-    transformer = et.XSLT(xsl)
     csv_string = str(transformer(xml))
 
     df = pd.read_csv(
@@ -220,10 +218,8 @@ def _process_cxml_to_df(cxml_path: str, xsl_path: str = None):
         },
     )
 
-    df["baseTime"] = pd.to_datetime(df["baseTime"], format="%Y-%m-%dT%H:%M:%S")
-    df["validTime"] = pd.to_datetime(
-        df["validTime"], format="%Y-%m-%dT%H:%M:%SZ"
-    )
+    df["baseTime"] = pd.to_datetime(df["baseTime"])
+    df["validTime"] = pd.to_datetime(df["validTime"])
     df.dropna(
         subset=["validTime", "latitude", "longitude"], how="any", inplace=True
     )
