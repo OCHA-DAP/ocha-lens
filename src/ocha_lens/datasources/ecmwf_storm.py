@@ -34,18 +34,6 @@ BASIN_MAPPING = {
 CXML2CSV_XSL = Path(__file__).parent / "data/cxml_ecmwf_transformation.xsl"
 
 
-def _get_raw_filename(date):
-    dspath = "https://data.rda.ucar.edu/d330003/"
-    ymd = date.strftime("%Y%m%d")
-    ymdhms = date.strftime("%Y%m%d%H%M%S")
-    server = "test" if date < datetime(2008, 8, 1) else "prod"
-    file = (
-        f"ecmf/{date.year}/{ymd}/z_tigge_c_ecmf_{ymdhms}_"
-        f"ifs_glob_{server}_all_glo.xml"
-    )
-    return dspath + file
-
-
 def download_hindcasts(
     date,
     save_dir="storm",
@@ -174,7 +162,8 @@ def get_storms_and_tracks(df):
     df_tracks = df.merge(
         df_storms[["name", "basin", "season", "storm_id"]], how="left"
     )
-    df_tracks = df_tracks.drop(columns=["provider", "name", "number"])
+    df_tracks = df_tracks.drop(columns=["season", "name", "number"])
+    df_tracks = df_tracks.rename(columns={"id": "forecast_id"})
     df_tracks["point_id"] = [str(uuid.uuid4()) for _ in range(len(df_tracks))]
     gdf_tracks = gpd.GeoDataFrame(
         df_tracks,
@@ -185,6 +174,7 @@ def get_storms_and_tracks(df):
     )
     gdf_tracks = gdf_tracks.drop(["latitude", "longitude"], axis=1)
     assert len(gdf_tracks == len(df))
+    df_storms = df_storms.rename(columns={"basin": "genesis_basin"})
     return df_storms, gdf_tracks
 
 
@@ -228,9 +218,12 @@ def _process_cxml_to_df(cxml_path: str, xsl_path: str = None):
             "cycloneName": "object",
             "id": "object",
         },
-        parse_dates=["baseTime", "validTime"],
     )
 
+    df["baseTime"] = pd.to_datetime(df["baseTime"], format="%Y-%m-%dT%H:%M:%S")
+    df["validTime"] = pd.to_datetime(
+        df["validTime"], format="%Y-%m-%dT%H:%M:%SZ"
+    )
     df.dropna(
         subset=["validTime", "latitude", "longitude"], how="any", inplace=True
     )
@@ -273,3 +266,15 @@ def _convert_season(df):
         df_.loc[southern_hemisphere_mask & july_1_mask, "season"] + 1
     )
     return df_
+
+
+def _get_raw_filename(date):
+    dspath = "https://data.rda.ucar.edu/d330003/"
+    ymd = date.strftime("%Y%m%d")
+    ymdhms = date.strftime("%Y%m%d%H%M%S")
+    server = "test" if date < datetime(2008, 8, 1) else "prod"
+    file = (
+        f"ecmf/{date.year}/{ymd}/z_tigge_c_ecmf_{ymdhms}_"
+        f"ifs_glob_{server}_all_glo.xml"
+    )
+    return dspath + file
