@@ -116,7 +116,7 @@ def load_ibtracs(
         return xr.open_dataset(file_path)
 
 
-def get_provisional_tracks(ds: xr.Dataset) -> pd.DataFrame:
+def get_provisional_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
     """
     Extract provisional storm tracks from the IBTrACS dataset.
 
@@ -190,12 +190,18 @@ def get_provisional_tracks(ds: xr.Dataset) -> pd.DataFrame:
     # TODO: Probably a bit overkill in the ids here (and also not really readable)
     # Should think about how to best improve
     result_df["point_id"] = [str(uuid.uuid4()) for _ in range(len(result_df))]
-    df = _convert_track_column_types(result_df)
+
+    # Need to get the storms df to join in the storm_id that we created
+    storms = get_storms(ds)
+    merged_df = result_df.merge(storms[["sid", "storm_id"]], how="left")
+    assert len(merged_df) == len(result_df)
+
+    df = _convert_track_column_types(merged_df)
     gdf = _to_gdf(df)
     return gdf
 
 
-def get_best_tracks(ds: xr.Dataset) -> pd.DataFrame:
+def get_best_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
     """
     Extract the "best" storm tracks from the IBTrACS dataset.
 
@@ -329,11 +335,17 @@ def get_best_tracks(ds: xr.Dataset) -> pd.DataFrame:
     # TODO: Probably a bit overkill in the ids here (and also not really readable)
     # Should think about how to best improve
     result_df["point_id"] = [str(uuid.uuid4()) for _ in range(len(result_df))]
-    # TODO: Should lat and lon be potentially null?
+    # TODO: Drop points that have null values in non-nullable columns
     result_df = result_df.dropna(
         subset=["latitude", "longitude", "valid_time", "sid"]
     )
-    df = _convert_track_column_types(result_df)
+
+    # Need to get the storms df to join in the storm_id that we created
+    storms = get_storms(ds)
+    merged_df = result_df.merge(storms[["sid", "storm_id"]], how="left")
+    assert len(merged_df) == len(result_df)
+
+    df = _convert_track_column_types(merged_df)
     gdf = _to_gdf(df)
     return gdf
 
@@ -384,13 +396,14 @@ def get_storms(ds: xr.Dataset) -> pd.DataFrame:
         df.groupby("sid").first().reset_index().drop(columns=["track_type"])
     )
 
-    df_grouped["storm_id"] = [
-        str(uuid.uuid4()) for _ in range(len(df_grouped))
-    ]
-    df_grouped["season"] = df_grouped["season"].astype(int)
-    return df_grouped.rename(
+    df_grouped["name"] = df_grouped["name"].replace("UNNAMED", pd.NA)
+    df_grouped = df_grouped.rename(
         columns={"usa_atcf_id": "atcf_id", "basin": "genesis_basin"}
     )
+    df_grouped["season"] = df_grouped["season"].astype(int)
+    df_grouped["storm_id"] = df_grouped.apply(_create_storm_id, axis=1)
+
+    return df_grouped
 
 
 def normalize_radii(df, radii_cols=None):
@@ -496,3 +509,9 @@ def _to_gdf(df):
     )
     gdf = gdf.drop(["latitude", "longitude"], axis=1)
     return gdf
+
+
+def _create_storm_id(row):
+    name_part = str(row["number"]) if pd.isna(row["name"]) else row["name"]
+    storm_id = f"{name_part}_{row['genesis_basin']}_{row['season']}".lower()
+    return storm_id
