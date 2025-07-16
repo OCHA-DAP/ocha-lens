@@ -5,9 +5,11 @@ import uuid
 from pathlib import Path
 from typing import List, Literal, Optional
 
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 import xarray as xr
+from shapely.geometry import Point
 
 IBTRACS_CONFIG = {
     "tracks": {
@@ -189,7 +191,8 @@ def get_provisional_tracks(ds: xr.Dataset) -> pd.DataFrame:
     # Should think about how to best improve
     result_df["point_id"] = [str(uuid.uuid4()) for _ in range(len(result_df))]
     df = _convert_track_column_types(result_df)
-    return df
+    gdf = _to_gdf(df)
+    return gdf
 
 
 def get_best_tracks(ds: xr.Dataset) -> pd.DataFrame:
@@ -331,7 +334,8 @@ def get_best_tracks(ds: xr.Dataset) -> pd.DataFrame:
         subset=["latitude", "longitude", "valid_time", "sid"]
     )
     df = _convert_track_column_types(result_df)
-    return df
+    gdf = _to_gdf(df)
+    return gdf
 
 
 def get_storms(ds: xr.Dataset) -> pd.DataFrame:
@@ -482,3 +486,13 @@ def _convert_track_column_types(df):
     ]:
         df_[col] = df[col].astype("float32")
     return df_
+
+
+def _to_gdf(df):
+    gdf = gpd.GeoDataFrame(
+        df,
+        geometry=[Point(xy) for xy in zip(df.longitude, df.latitude)],
+        crs="EPSG:4326",
+    )
+    gdf = gdf.drop(["latitude", "longitude"], axis=1)
+    return gdf
