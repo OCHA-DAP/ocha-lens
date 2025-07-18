@@ -16,18 +16,19 @@ from shapely.geometry import Point
 logger = logging.getLogger(__name__)
 
 # TEMP
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
-handler.setLevel(logging.DEBUG)
+handler.setLevel(logging.INFO)
 logger.addHandler(handler)
 
-# TODO -- or is this even feasible?
+# TODO: Keep confirming this
 BASIN_MAPPING = {
     "Northwest Pacific": "WP",
-    "Southwest Pacific": "SP",
     "Northeast Pacific": "EP",
     "North Atlantic": "NA",
     "North Indian": "NI",
+    "South Indian": "SI",
+    "South Pacific": "SP",
 }
 
 
@@ -137,12 +138,13 @@ def load_hindcasts(
 
 
 def get_storms_and_tracks(df):
+    df["name"] = df["name"].str.upper()
+    df["season"] = df.apply(_convert_season, axis=1)
+    df["basin"] = df.apply(_convert_basin, axis=1)
+
     # We're only identifying storms that have names
     df_ = df.dropna(subset="name")
-    df_ = _convert_season(df_)
-    df_["storm_id"] = df_["name"].str.cat(
-        [df_["basin"], df_["season"].astype(str)], sep="_"
-    )
+    df_["storm_id"] = df_.apply(_create_storm_id, axis=1)
     df_ = df_.sort_values("issued_time")
     df_forecasts = (
         df_.groupby(["id", "issued_time", "name", "number"])[
@@ -163,9 +165,11 @@ def get_storms_and_tracks(df):
     df_tracks = df.merge(
         df_storms[["name", "basin", "season", "storm_id"]], how="left"
     )
+    assert len(df_tracks) == len(df)
     df_tracks = df_tracks.drop(columns=["season", "name", "number"])
     df_tracks = df_tracks.rename(columns={"id": "forecast_id"})
     df_tracks["point_id"] = [str(uuid.uuid4()) for _ in range(len(df_tracks))]
+    df_tracks["pressure"] = df_tracks["pressure"].astype("float64")
     gdf_tracks = gpd.GeoDataFrame(
         df_tracks,
         geometry=[
@@ -251,19 +255,6 @@ def _process_cxml_to_df(cxml_path: str, stage, save_dir, xsl_path: str = None):
     return df
 
 
-def _convert_season(df):
-    df_ = df.copy()
-    df_["season"] = df_["valid_time"].dt.year
-    southern_hemisphere_mask = (
-        df_["basin"].str.lower().str.contains("south", na=False)
-    )
-    july_1_mask = df_["valid_time"].dt.month >= 7
-    df_.loc[southern_hemisphere_mask & july_1_mask, "season"] = (
-        df_.loc[southern_hemisphere_mask & july_1_mask, "season"] + 1
-    )
-    return df_
-
-
 def _get_raw_filename(date):
     dspath = "https://data.rda.ucar.edu/d330003/"
     ymd = date.strftime("%Y%m%d")
@@ -274,3 +265,33 @@ def _get_raw_filename(date):
         f"ifs_glob_{server}_all_glo.xml"
     )
     return dspath + file
+
+
+def _create_storm_id(row):
+    name_part = str(row["number"]) if pd.isna(row["name"]) else row["name"]
+    storm_id = f"{name_part}_{row['basin']}_{row['season']}".lower()
+    return storm_id
+
+
+def _convert_basin(row):
+    basin = row["basin"]
+    if row["basin"] == "Southwest Pacific":
+        basin = "South Indian" if row["longitude"] <= 135 else "South Pacific"
+    try:
+        standard_basin = BASIN_MAPPING[basin]
+    except Exception:
+        logger.warning(f"Unexpected input basin: {basin}")
+        standard_basin = basin
+    return standard_basin
+
+
+def _convert_season(row):
+    season = row["valid_time"].year
+    basin = row["basin"]
+    is_southern_hemisphere = (
+        "south" in basin.lower() if isinstance(basin, str) else False
+    )
+    is_july_or_later = row["valid_time"].month >= 7
+    if is_southern_hemisphere and is_july_or_later:
+        season += 1
+    return season
