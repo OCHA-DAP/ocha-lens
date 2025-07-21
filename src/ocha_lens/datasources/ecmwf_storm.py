@@ -103,6 +103,7 @@ def download_hindcasts(
 
 
 def get_storms(df):
+    df = df.copy()
     df["name"] = df["name"].str.upper()
     df["season"] = df.apply(_convert_season, axis=1)
     df["basin"] = df.apply(_convert_basin, axis=1)
@@ -131,13 +132,18 @@ def get_storms(df):
 
 
 def load_hindcasts(
-    start_date: datetime = datetime(2025, 1, 1).date(),
-    end_date=datetime.now().date(),
+    start_date: datetime = None,
+    end_date: datetime = None,
     temp_dir="storm",
     use_cache=True,
     skip_if_missing=False,
     stage="dev",
 ):
+    if start_date is None:
+        start_date = (datetime.now() - timedelta(days=1)).date()
+    if end_date is None:
+        end_date = (datetime.now() - timedelta(days=1)).date()
+
     save_dir = Path(temp_dir) if temp_dir else Path("temp")
     os.makedirs(save_dir, exist_ok=True)
 
@@ -169,6 +175,7 @@ def get_tracks(df):
     df_storms = get_storms(df)
     df_tracks = df.merge(df_storms[["name", "season", "storm_id"]], how="left")
     assert len(df_tracks) == len(df)
+    df_tracks["basin"] = df_tracks.apply(_convert_basin, axis=1)
     df_tracks = df_tracks.drop(columns=["season", "name", "number"])
     df_tracks = df_tracks.rename(columns={"id": "forecast_id"})
     df_tracks["point_id"] = [str(uuid.uuid4()) for _ in range(len(df_tracks))]
