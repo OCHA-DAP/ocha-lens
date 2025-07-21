@@ -9,19 +9,13 @@ import geopandas as gpd
 import lxml.etree as et
 import ocha_stratus as stratus
 import pandas as pd
+import pandera.pandas as pa
 import requests
 from dateutil import rrule
 from shapely.geometry import Point
 
 logger = logging.getLogger(__name__)
 
-# TEMP
-logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-handler.setLevel(logging.INFO)
-logger.addHandler(handler)
-
-# TODO: Keep confirming this
 BASIN_MAPPING = {
     "Northwest Pacific": "WP",
     "Northeast Pacific": "EP",
@@ -30,6 +24,45 @@ BASIN_MAPPING = {
     "South Indian": "SI",
     "South Pacific": "SP",
 }
+
+STORM_SCHEMA = pa.DataFrameSchema(
+    {
+        "name": pa.Column(str, nullable=True),
+        "number": pa.Column(str, nullable=True),
+        "storm_id": pa.Column(str, nullable=False),
+        "provider": pa.Column(str, nullable=True),
+        "season": pa.Column(int, pa.Check.between(2005, 2050)),
+        "genesis_basin": pa.Column(
+            str, pa.Check.isin(list(BASIN_MAPPING.values())), nullable=True
+        ),
+    },
+    strict=True,
+    coerce=True,
+)
+
+TRACK_SCHEMA = pa.DataFrameSchema(
+    {
+        "issued_time": pa.Column(pd.Timestamp),
+        "provider": pa.Column(str, nullable=False),
+        "forecast_id": pa.Column(str, nullable=False),
+        "basin": pa.Column(
+            str, pa.Check.isin(list(BASIN_MAPPING.values())), nullable=False
+        ),
+        "leadtime": pa.Column("Int64", pa.Check.ge(0)),
+        "valid_time": pa.Column(pd.Timestamp),
+        "pressure": pa.Column(
+            float, pa.Check.between(800, 1100), nullable=True
+        ),
+        "wind_speed": pa.Column(
+            float, pa.Check.between(0, 300), nullable=True
+        ),
+        "storm_id": pa.Column(str, nullable=True),
+        "point_id": pa.Column(str, nullable=False),
+        "geometry": pa.Column(gpd.array.GeometryDtype, nullable=False),
+    },
+    strict=True,
+    coerce=True,
+)
 
 
 CXML2CSV_XSL = Path(__file__).parent / "data/cxml_ecmwf_transformation.xsl"
@@ -128,7 +161,7 @@ def get_storms(df):
     ).drop_duplicates(subset=["storm_id"])
     df_storms = df_storms.drop(columns=["id", "issued_time"])
     df_storms = df_storms.rename(columns={"basin": "genesis_basin"})
-    return df_storms
+    return STORM_SCHEMA.validate(df_storms)
 
 
 def load_hindcasts(
@@ -179,7 +212,7 @@ def get_tracks(df):
     df_tracks = df_tracks.drop(columns=["season", "name", "number"])
     df_tracks = df_tracks.rename(columns={"id": "forecast_id"})
     df_tracks["point_id"] = [str(uuid.uuid4()) for _ in range(len(df_tracks))]
-    df_tracks["pressure"] = df_tracks["pressure"].astype("float64")
+    df_tracks["pressure"] = df_tracks["pressure"]
     gdf_tracks = gpd.GeoDataFrame(
         df_tracks,
         geometry=[
@@ -190,7 +223,7 @@ def get_tracks(df):
     gdf_tracks = gdf_tracks.drop(["latitude", "longitude"], axis=1)
     assert len(gdf_tracks == len(df))
 
-    return gdf_tracks
+    return TRACK_SCHEMA.validate(gdf_tracks)
 
 
 def _process_cxml_to_df(cxml_path: str, stage, save_dir, xsl_path: str = None):
