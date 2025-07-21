@@ -1,3 +1,4 @@
+import logging
 import os
 import tempfile
 import urllib.request
@@ -10,6 +11,11 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from shapely.geometry import Point
+
+logger = logging.getLogger(__name__)
+
+STORM_SCHEMA = {}
+TRACK_SCHEMA = {}
 
 IBTRACS_CONFIG = {
     "tracks": {
@@ -46,7 +52,7 @@ IBTRACS_CONFIG = {
 
 def download_ibtracs(
     dataset: Literal["ALL", "ACTIVE", "last3years"] = "ALL",
-    temp_dir: Optional[str] = None,
+    save_dir: Optional[str] = "storm",
 ) -> Path:
     """
     Download IBTrACS data to a specified or temporary directory.
@@ -58,17 +64,16 @@ def download_ibtracs(
         - "ALL": Complete historical record
         - "ACTIVE": Records for active storms only
         - "last3years": Records from the past three years
-    temp_dir : str, optional
-        Directory to download to. If None, the caller is responsible
-        for providing a temporary directory.
+    save_dir : str, optional
+        Directory to download to.
 
     Returns
     -------
     Path
         Path to the downloaded file
     """
-    if temp_dir is not None:
-        os.makedirs(temp_dir, exist_ok=True)
+    save_dir = Path(save_dir) / "raw"
+    os.makedirs(save_dir, exist_ok=True)
 
     url = (
         "https://www.ncei.noaa.gov/data/"
@@ -77,7 +82,7 @@ def download_ibtracs(
     )
 
     filename = f"IBTrACS.{dataset}.v04r01.nc"
-    download_path = Path(temp_dir) / filename
+    download_path = save_dir / filename
     urllib.request.urlretrieve(url, download_path)
 
     return download_path
@@ -106,7 +111,7 @@ def load_ibtracs(
     if file_path is None:
         # Use a temporary directory that automatically cleans up
         with tempfile.TemporaryDirectory(prefix="ibtracs_data_") as temp_dir:
-            file_path = download_ibtracs(dataset=dataset, temp_dir=temp_dir)
+            file_path = download_ibtracs(dataset=dataset, save_dir=temp_dir)
 
             # Load the dataset and ensure it's fully loaded into memory
             # since temp_dir will be removed after this block
@@ -116,7 +121,142 @@ def load_ibtracs(
         return xr.open_dataset(file_path)
 
 
-def get_provisional_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
+def get_storms(ds: xr.Dataset) -> pd.DataFrame:
+    """
+    Extract storm metadata from IBTrACS dataset.
+
+    Creates a dataset with one row per storm containing identifying information.
+    This provides a summary of all storms in the dataset with their basic metadata.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        IBTrACS dataset containing storm track data
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame containing storm metadata with one row per storm
+
+    Notes
+    -----
+    The function takes the first available metadata for each storm when multiple
+    records exist. This works because storm metadata is generally consistent
+    across a storm's lifetime.
+    """
+    storm_cols = [
+        "sid",
+        "usa_atcf_id",
+        "number",
+        "season",
+        "name",
+        "track_type",
+        "basin",
+    ]
+    str_vars = ["sid", "name", "track_type", "usa_atcf_id", "basin"]
+
+    ds_subset = ds[storm_cols]
+    ds_subset[str_vars] = ds_subset[str_vars].astype(str)
+    df = ds_subset.to_dataframe().reset_index()
+    df = df.replace(b"", pd.NA).replace("", pd.NA)
+    cols = storm_cols
+    df = df[cols]
+
+    df["provisional"] = df["track_type"].apply(lambda x: x == "PROVISIONAL")
+    df_grouped = (
+        df.groupby("sid").first().reset_index().drop(columns=["track_type"])
+    )
+
+    df_grouped["name"] = df_grouped["name"].replace("UNNAMED", pd.NA)
+    df_grouped = df_grouped.rename(
+        columns={"usa_atcf_id": "atcf_id", "basin": "genesis_basin"}
+    )
+    df_grouped["season"] = df_grouped["season"].astype(int)
+    df_grouped["storm_id"] = df_grouped.apply(_create_storm_id, axis=1)
+
+    return df_grouped
+
+
+def get_tracks(ds: xr.Dataset, track_type: str = "all") -> gpd.GeoDataFrame:
+    """
+    Extract track data from IBTrACS source data.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        IBTrACS dataset containing storm track data
+    track_type: {"provisional", "best", "all"}
+        Which subset of tracks to return
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame containing track data with standardized column names
+    """
+    if track_type == "provisional":
+        return _get_provisional_tracks(ds)
+    elif track_type == "best":
+        return _get_best_tracks(ds)
+    elif track_type == "all":
+        df_provisional = _get_provisional_tracks(ds)
+        df_best = _get_best_tracks(ds)
+        return pd.concat([df_provisional, df_best])
+    else:
+        logger.error(
+            f"Invalid track type: {track_type}. Must be either `provisional` or `best`."
+        )
+        return
+
+
+def normalize_radii(df, radii_cols=None):
+    """
+    Convert radii data from separate quadrant rows to list format.
+
+    This function converts radius data that's stored with separate rows for each quadrant
+    into a single row per storm point with radius values stored as lists.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame containing storm track data with radii columns and quadrant information
+    radii_cols : list of str, optional
+        List of column names containing radii data. If None, defaults to
+        ["r34", "r50", "r64"]
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame with radii data converted to lists for each point where each list
+        contains values for the 4 quadrants (TODO - Confirm the ordering)
+    """
+    if not radii_cols:
+        radii_cols = ["r34", "r50", "r64"]
+
+    dff = df.copy()
+    group_columns = [
+        col
+        for col in dff.columns
+        if col not in radii_cols and col != "quadrant"
+    ]
+
+    result_df = (
+        dff.drop(columns=radii_cols + ["quadrant"])
+        .drop_duplicates(subset=group_columns)
+        .reset_index(drop=True)
+    )
+
+    for col in radii_cols:
+        pivot_df = dff.pivot(
+            index=group_columns, columns="quadrant", values=col
+        )
+        lists = pivot_df.apply(lambda x: x.tolist(), axis=1)
+        result_df[col] = (
+            result_df.set_index(group_columns).index.map(lists).values
+        )
+    return result_df
+
+
+def _get_provisional_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
     """
     Extract provisional storm tracks from the IBTrACS dataset.
 
@@ -201,7 +341,7 @@ def get_provisional_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
     return gdf
 
 
-def get_best_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
+def _get_best_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
     """
     Extract the "best" storm tracks from the IBTrACS dataset.
 
@@ -348,110 +488,6 @@ def get_best_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
     df = _convert_track_column_types(merged_df)
     gdf = _to_gdf(df)
     return gdf
-
-
-def get_storms(ds: xr.Dataset) -> pd.DataFrame:
-    """
-    Extract storm metadata from IBTrACS dataset.
-
-    Creates a dataset with one row per storm containing identifying information.
-    This provides a summary of all storms in the dataset with their basic metadata.
-
-    Parameters
-    ----------
-    ds : xarray.Dataset
-        IBTrACS dataset containing storm track data
-
-    Returns
-    -------
-    pandas.DataFrame
-        DataFrame containing storm metadata with one row per storm
-
-    Notes
-    -----
-    The function takes the first available metadata for each storm when multiple
-    records exist. This works because storm metadata is generally consistent
-    across a storm's lifetime.
-    """
-    storm_cols = [
-        "sid",
-        "usa_atcf_id",
-        "number",
-        "season",
-        "name",
-        "track_type",
-        "basin",
-    ]
-    str_vars = ["sid", "name", "track_type", "usa_atcf_id", "basin"]
-
-    ds_subset = ds[storm_cols]
-    ds_subset[str_vars] = ds_subset[str_vars].astype(str)
-    df = ds_subset.to_dataframe().reset_index()
-    df = df.replace(b"", pd.NA).replace("", pd.NA)
-    cols = storm_cols
-    df = df[cols]
-
-    df["provisional"] = df["track_type"].apply(lambda x: x == "PROVISIONAL")
-    df_grouped = (
-        df.groupby("sid").first().reset_index().drop(columns=["track_type"])
-    )
-
-    df_grouped["name"] = df_grouped["name"].replace("UNNAMED", pd.NA)
-    df_grouped = df_grouped.rename(
-        columns={"usa_atcf_id": "atcf_id", "basin": "genesis_basin"}
-    )
-    df_grouped["season"] = df_grouped["season"].astype(int)
-    df_grouped["storm_id"] = df_grouped.apply(_create_storm_id, axis=1)
-
-    return df_grouped
-
-
-def normalize_radii(df, radii_cols=None):
-    """
-    Convert radii data from separate quadrant rows to list format.
-
-    This function converts radius data that's stored with separate rows for each quadrant
-    into a single row per storm point with radius values stored as lists.
-
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        DataFrame containing storm track data with radii columns and quadrant information
-    radii_cols : list of str, optional
-        List of column names containing radii data. If None, defaults to
-        ["r34", "r50", "r64"]
-
-    Returns
-    -------
-    pandas.DataFrame
-        DataFrame with radii data converted to lists for each point where each list
-        contains values for the 4 quadrants (TODO - Confirm the ordering)
-    """
-    if not radii_cols:
-        radii_cols = ["r34", "r50", "r64"]
-
-    dff = df.copy()
-    group_columns = [
-        col
-        for col in dff.columns
-        if col not in radii_cols and col != "quadrant"
-    ]
-
-    result_df = (
-        dff.drop(columns=radii_cols + ["quadrant"])
-        .drop_duplicates(subset=group_columns)
-        .reset_index(drop=True)
-    )
-
-    for col in radii_cols:
-        pivot_df = dff.pivot(
-            index=group_columns, columns="quadrant", values=col
-        )
-        lists = pivot_df.apply(lambda x: x.tolist(), axis=1)
-        result_df[col] = (
-            result_df.set_index(group_columns).index.map(lists).values
-        )
-    return result_df
 
 
 def _convert_string_columns(
