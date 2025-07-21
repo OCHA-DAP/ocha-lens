@@ -2,7 +2,7 @@ import io
 import logging
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import geopandas as gpd
@@ -39,7 +39,7 @@ def download_hindcasts(
     date,
     save_dir="storm",
     use_cache=False,
-    skip_if_missing=False,
+    skip_if_missing=True,
     stage="local",  # dev, prod, or local
 ):
     """
@@ -102,7 +102,34 @@ def download_hindcasts(
     return outfile
 
 
-# TODO: Give option to load from blob as well
+def get_storms(df):
+    df["name"] = df["name"].str.upper()
+    df["season"] = df.apply(_convert_season, axis=1)
+    df["basin"] = df.apply(_convert_basin, axis=1)
+
+    # We're only identifying storms that have names
+    df_ = df.dropna(subset="name").copy()
+    df_.loc[:, "storm_id"] = df_.apply(_create_storm_id, axis=1)
+    df_ = df_.sort_values("issued_time")
+    df_forecasts = (
+        df_.groupby(["id", "issued_time", "name", "number"])[
+            ["storm_id", "provider", "season", "basin"]
+        ]
+        .first()
+        .reset_index()
+    )
+
+    # Note that a single storm may have different numbers during its forecast lifecycle
+    # We're picking the one from the last forecast
+    # TODO: Check that we're not dropping different storms that have ended up with the same id??
+    df_storms = df_forecasts.sort_values(
+        "issued_time", ascending=False
+    ).drop_duplicates(subset=["storm_id"])
+    df_storms = df_storms.drop(columns=["id", "issued_time"])
+    df_storms = df_storms.rename(columns={"basin": "genesis_basin"})
+    return df_storms
+
+
 def load_hindcasts(
     start_date: datetime = datetime(2025, 1, 1).date(),
     end_date=datetime.now().date(),
@@ -117,7 +144,7 @@ def load_hindcasts(
     date_list = rrule.rrule(
         rrule.HOURLY,
         dtstart=start_date,
-        until=end_date,
+        until=end_date + timedelta(hours=12),
         interval=12,
     )
 
@@ -137,34 +164,10 @@ def load_hindcasts(
     return
 
 
-def get_storms_and_tracks(df):
-    df["name"] = df["name"].str.upper()
-    df["season"] = df.apply(_convert_season, axis=1)
-    df["basin"] = df.apply(_convert_basin, axis=1)
-
-    # We're only identifying storms that have names
-    df_ = df.dropna(subset="name")
-    df_["storm_id"] = df_.apply(_create_storm_id, axis=1)
-    df_ = df_.sort_values("issued_time")
-    df_forecasts = (
-        df_.groupby(["id", "issued_time", "name", "number"])[
-            ["storm_id", "provider", "season", "basin"]
-        ]
-        .first()
-        .reset_index()
-    )
-
-    # Note that a single storm may have different numbers during its forecast lifecycle
-    # We're picking the one from the last forecast
-    df_storms = df_forecasts.sort_values(
-        "issued_time", ascending=False
-    ).drop_duplicates(subset=["storm_id"])
-    df_storms = df_storms.drop(columns=["id", "issued_time"])
-
-    # Where available, join the storm_ids on to the tracks
-    df_tracks = df.merge(
-        df_storms[["name", "basin", "season", "storm_id"]], how="left"
-    )
+def get_tracks(df):
+    # Some duplication of effort here, but want to keep API similar with IBTrACS
+    df_storms = get_storms(df)
+    df_tracks = df.merge(df_storms[["name", "season", "storm_id"]], how="left")
     assert len(df_tracks) == len(df)
     df_tracks = df_tracks.drop(columns=["season", "name", "number"])
     df_tracks = df_tracks.rename(columns={"id": "forecast_id"})
@@ -179,8 +182,8 @@ def get_storms_and_tracks(df):
     )
     gdf_tracks = gdf_tracks.drop(["latitude", "longitude"], axis=1)
     assert len(gdf_tracks == len(df))
-    df_storms = df_storms.rename(columns={"basin": "genesis_basin"})
-    return df_storms, gdf_tracks
+
+    return gdf_tracks
 
 
 def _process_cxml_to_df(cxml_path: str, stage, save_dir, xsl_path: str = None):
