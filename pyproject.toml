@@ -31,7 +31,8 @@ dependencies = [
     "pandas>=2.2.2",
     "xarray>=2024.7.0",
     "netcdf4==1.7.2",
-    "ocha-stratus==0.1.3"
+    "ocha-stratus==0.1.3",
+    "pandera==0.25.0"
 ]
 dynamic = ["version"]
 
