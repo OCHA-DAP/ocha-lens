@@ -4,6 +4,7 @@ import os
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Literal, Optional, Union
 
 import geopandas as gpd
 import lxml.etree as et
@@ -69,37 +70,61 @@ CXML2CSV_XSL = Path(__file__).parent / "data/cxml_ecmwf_transformation.xsl"
 
 
 def download_hindcasts(
-    date,
-    save_dir="storm",
-    use_cache=False,
-    skip_if_missing=True,
-    stage="local",  # dev, prod, or local
-):
+    date: datetime,
+    save_dir: str = "storm",
+    use_cache: bool = False,
+    skip_if_missing: bool = True,
+    stage: Literal["dev", "prod", "local"] = "local",
+) -> Optional[Path]:
     """
-    Downloads historical ECMWF data from TIGGE in XML format
-    https://rda.ucar.edu/datasets/d330003/dataaccess/#
+    Download historical ECMWF data from TIGGE in XML format
+    from https://rda.ucar.edu/datasets/d330003/dataaccess/#
+
+    Data can be saved locally or uploaded to Azure blob storage
+    depending on the stage parameter.
+
+    Parameters
+    ----------
+    date : datetime
+        The datetime for which to download forecast data
+    save_dir : str, default "storm"
+        Directory or container name where files will be saved
+    use_cache : bool, default False
+        Whether to check for existing files before downloading
+    skip_if_missing : bool, default True
+        If True, skip download if file doesn't exist on server rather than downloading
+    stage : {"dev", "prod", "local"}, default "local"
+        Where to save the downloaded data:
+        - "local": Save to local filesystem
+        - "dev": Upload to development Azure blob storage
+        - "prod": Upload to production Azure blob storage
+
+    Returns
+    -------
+    Path or None
+        Path to the downloaded file if successful, None if download failed
     """
 
     filename = _get_raw_filename(date)
     base_filename = os.path.basename(filename)
-    base_outfile = f"xml/raw/{os.path.basename(base_filename)}"
-    outfile = Path(save_dir) / base_outfile
+    base_download_path = f"xml/raw/{os.path.basename(base_filename)}"
+    download_path = Path(save_dir) / base_download_path
 
     # Don't download if exists already
     if use_cache:
-        logger.debug(f"using cache for {outfile}")
+        logger.debug(f"using cache for {download_path}")
         if stage == "local":
-            if outfile.exists():
+            if download_path.exists():
                 logger.debug(f"{base_filename} already exists locally")
-                return outfile
+                return download_path
         elif stage == "dev" or stage == "prod":
             if (
                 stratus.get_container_client(save_dir, stage=stage)
-                .get_blob_client(base_outfile)
+                .get_blob_client(base_download_path)
                 .exists()
             ):
                 logger.debug(f"{base_filename} already exists in blob")
-                return outfile
+                return download_path
         else:
             logger.error(f"Invalid stage: {stage}")
             return
@@ -122,20 +147,44 @@ def download_hindcasts(
 
     if stage == "local":
         logger.debug("saving locally")
-        outfile.parent.mkdir(parents=True, exist_ok=True)
-        open(outfile, "wb").write(req.content)
+        download_path.parent.mkdir(parents=True, exist_ok=True)
+        open(download_path, "wb").write(req.content)
     elif stage == "dev" or stage == "prod":
         logger.debug(f"Saving to {stage} blob")
         stratus.upload_blob_data(
-            req.content, base_outfile, container_name=save_dir, stage=stage
+            req.content,
+            base_download_path,
+            container_name=save_dir,
+            stage=stage,
         )
     else:
         logger.error(f"Invalid stage: {stage}")
         return
-    return outfile
+    return download_path
 
 
 def get_storms(df):
+    """
+    Processes ECMWF tropical cyclone forecast data to create a storms dataset
+    with one row per storm containing identifying information. Only storms with
+    names are included in the output.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame containing raw ECMWF forecast data
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame containing storm metadata with with one row per storm
+
+    Notes
+    -----
+    Storm IDs are created using the format "{name/number}_{basin}_{season}".
+    For storms with multiple forecasts, metadata is taken from the most recent forecast.
+    Season calculation accounts for Southern Hemisphere cyclone seasons.
+    """
     df = df.copy()
     df["name"] = df["name"].str.upper()
     df["season"] = df.apply(_convert_season, axis=1)
@@ -165,13 +214,42 @@ def get_storms(df):
 
 
 def load_hindcasts(
-    start_date: datetime = None,
-    end_date: datetime = None,
-    temp_dir="storm",
-    use_cache=True,
-    skip_if_missing=False,
-    stage="dev",
-):
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    temp_dir: str = "storm",
+    use_cache: bool = True,
+    skip_if_missing: bool = False,
+    stage: Literal["dev", "prod", "local"] = "dev",
+) -> Optional[pd.DataFrame]:
+    """
+    Load ECMWF tropical cyclone hindcast data for a date range.
+
+    Downloads and processes ECMWF forecast data from TIGGE for the specified
+    date range. Data is downloaded at 12-hour intervals and processed into
+    a standardized format.
+
+    Parameters
+    ----------
+    start_date : datetime, optional
+        Start date for data retrieval. If None, defaults to yesterday
+    end_date : datetime, optional
+        End date for data retrieval. If None, defaults to yesterday
+    temp_dir : str, default "storm"
+        Directory or container name for temporary file storage
+    use_cache : bool, default True
+        Whether to use cached files if they exist
+    skip_if_missing : bool, default False
+        Whether to skip dates where files are missing on the server
+    stage : {"dev", "prod", "local"}, default "dev"
+        Storage location for downloaded files
+
+    Returns
+    -------
+    pandas.DataFrame or None
+        DataFrame containing processed forecast data with columns including
+        issued_time, valid_time, latitude, longitude, pressure, wind_speed, etc.
+        Returns None if no data is available for the specified date range
+    """
     if start_date is None:
         start_date = (datetime.now() - timedelta(days=1)).date()
     if end_date is None:
@@ -203,7 +281,25 @@ def load_hindcasts(
     return
 
 
-def get_tracks(df):
+def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
+    """
+    Extract tropical cyclone track data from ECMWF forecast data.
+
+    Processes ECMWF forecast data to create a tracks dataset with individual
+    forecast points as rows. Each point contains storm information, forecast
+    metadata, and geometric location data.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame containing processed ECMWF forecast data
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        GeoDataFrame containing track data with standardized column names and
+        geometry points for each location
+    """
     # Some duplication of effort here, but want to keep API similar with IBTrACS
     df_storms = get_storms(df)
     df_tracks = df.merge(df_storms[["name", "season", "storm_id"]], how="left")
@@ -226,9 +322,36 @@ def get_tracks(df):
     return TRACK_SCHEMA.validate(gdf_tracks)
 
 
-def _process_cxml_to_df(cxml_path: str, stage, save_dir, xsl_path: str = None):
-    """Adapted from
+def _process_cxml_to_df(
+    cxml_path: Union[str, Path],
+    stage: Literal["dev", "prod", "local"],
+    save_dir: Union[str, Path],
+    xsl_path: Optional[Union[str, Path]] = None,
+) -> Optional[pd.DataFrame]:
+    """
+    Process TIGGE CXML (cyclone XML) file to DataFrame format. Input data
+    may either be local or in Azure blob storage. Adapted from
     https://github.com/CLIMADA-project/climada_petals/blob/6381a3c90dc9f1acd1e41c95f826d7dd7f623fff/climada_petals/hazard/tc_tracks_forecast.py#L627.  # noqa
+
+    Parameters
+    ----------
+    cxml_path : str or Path
+        Path to the CXML file to process
+    stage : {"dev", "prod", "local"}
+        Source location of the file
+    save_dir : str or Path
+        Directory or container where the file is stored
+    xsl_path : str or Path, optional
+        Path to XSL transformation file. If None, uses default transformation
+
+    Returns
+    -------
+    pandas.DataFrame or None
+        DataFrame containing processed cyclone data, or None if processing failed
+
+    Notes
+    -----
+    Removes ensemble forecasts, keeping only deterministic forecasts.
     """
     if xsl_path is None:
         xsl_path = CXML2CSV_XSL
@@ -329,6 +452,10 @@ def _convert_basin(row):
 
 
 def _convert_season(row):
+    """
+    Follows convention to use the subsequent year if the cyclone is in the
+    southern hemisphere and occurring after June
+    """
     season = row["valid_time"].year
     basin = row["basin"]
     is_southern_hemisphere = (
