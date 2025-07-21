@@ -163,56 +163,6 @@ def download_hindcasts(
     return download_path
 
 
-def get_storms(df):
-    """
-    Processes ECMWF tropical cyclone forecast data to create a storms dataset
-    with one row per storm containing identifying information. Only storms with
-    names are included in the output.
-
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        DataFrame containing raw ECMWF forecast data
-
-    Returns
-    -------
-    pandas.DataFrame
-        DataFrame containing storm metadata with with one row per storm
-
-    Notes
-    -----
-    Storm IDs are created using the format "{name/number}_{basin}_{season}".
-    For storms with multiple forecasts, metadata is taken from the most recent forecast.
-    Season calculation accounts for Southern Hemisphere cyclone seasons.
-    """
-    df = df.copy()
-    df["name"] = df["name"].str.upper()
-    df["season"] = df.apply(_convert_season, axis=1)
-    df["basin"] = df.apply(_convert_basin, axis=1)
-
-    # We're only identifying storms that have names
-    df_ = df.dropna(subset="name").copy()
-    df_.loc[:, "storm_id"] = df_.apply(_create_storm_id, axis=1)
-    df_ = df_.sort_values("issued_time")
-    df_forecasts = (
-        df_.groupby(["id", "issued_time", "name", "number"])[
-            ["storm_id", "provider", "season", "basin"]
-        ]
-        .first()
-        .reset_index()
-    )
-
-    # Note that a single storm may have different numbers during its forecast lifecycle
-    # We're picking the one from the last forecast
-    # TODO: Check that we're not dropping different storms that have ended up with the same id??
-    df_storms = df_forecasts.sort_values(
-        "issued_time", ascending=False
-    ).drop_duplicates(subset=["storm_id"])
-    df_storms = df_storms.drop(columns=["id", "issued_time"])
-    df_storms = df_storms.rename(columns={"basin": "genesis_basin"})
-    return STORM_SCHEMA.validate(df_storms)
-
-
 def load_hindcasts(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
@@ -279,6 +229,56 @@ def load_hindcasts(
         return pd.concat(dfs)
     logger.error("No data available for input dates")
     return
+
+
+def get_storms(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Processes ECMWF tropical cyclone forecast data to create a storms dataset
+    with one row per storm containing identifying information. Only storms with
+    names are included in the output.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame containing raw ECMWF forecast data
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame containing storm metadata with with one row per storm
+
+    Notes
+    -----
+    Storm IDs are created using the format "{name/number}_{basin}_{season}".
+    For storms with multiple forecasts, metadata is taken from the most recent forecast.
+    Season calculation accounts for Southern Hemisphere cyclone seasons.
+    """
+    df = df.copy()
+    df["name"] = df["name"].str.upper()
+    df["season"] = df.apply(_convert_season, axis=1)
+    df["basin"] = df.apply(_convert_basin, axis=1)
+
+    # We're only identifying storms that have names
+    df_ = df.dropna(subset="name").copy()
+    df_.loc[:, "storm_id"] = df_.apply(_create_storm_id, axis=1)
+    df_ = df_.sort_values("issued_time")
+    df_forecasts = (
+        df_.groupby(["id", "issued_time", "name", "number"])[
+            ["storm_id", "provider", "season", "basin"]
+        ]
+        .first()
+        .reset_index()
+    )
+
+    # Note that a single storm may have different numbers during its forecast lifecycle
+    # We're picking the one from the last forecast
+    # TODO: Check that we're not dropping different storms that have ended up with the same id??
+    df_storms = df_forecasts.sort_values(
+        "issued_time", ascending=False
+    ).drop_duplicates(subset=["storm_id"])
+    df_storms = df_storms.drop(columns=["id", "issued_time"])
+    df_storms = df_storms.rename(columns={"basin": "genesis_basin"})
+    return STORM_SCHEMA.validate(df_storms)
 
 
 def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
