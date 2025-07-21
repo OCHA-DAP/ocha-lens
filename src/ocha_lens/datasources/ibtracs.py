@@ -9,45 +9,84 @@ from typing import List, Literal, Optional
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import pandera.pandas as pa
 import xarray as xr
 from shapely.geometry import Point
 
+from ocha_lens.utils.validation import check_crs, check_quadrant_list
+
 logger = logging.getLogger(__name__)
 
-STORM_SCHEMA = {}
-TRACK_SCHEMA = {}
 
-IBTRACS_CONFIG = {
-    "tracks": {
-        "sid": "object",
-        "provider": "object",
-        "basin": "object",
-        "nature": "object",
-        "valid_time": "datetime64[ns]",
-        "latitude": "float32",
-        "longitude": "float32",
-        "wind_speed": "Int64",
-        "gust_speed": "Int64",
-        "pressure": "Int64",
-        "max_wind_radius": "Int64",
-        "last_closed_isobar_radius": "Int64",
-        "last_closed_isobar_pressure": "Int64",
-        "quadrant_radius_34": "object",  # Lists
-        "quadrant_radius_50": "object",  # Lists
-        "quadrant_radius_64": "object",  # Lists
-        "point_id": "object",
+STORM_SCHEMA = pa.DataFrameSchema(
+    {
+        "sid": pa.Column(str, nullable=False),
+        "atcf_id": pa.Column(str, nullable=True),
+        "number": pa.Column("int16", nullable=False),
+        "season": pa.Column(
+            "int64", pa.Check.between(1850, 2100), nullable=False
+        ),
+        "name": pa.Column(str, nullable=True),
+        "genesis_basin": pa.Column(str, nullable=False),
+        "provisional": pa.Column(bool, nullable=False),
+        "storm_id": pa.Column(str, nullable=False),
     },
-    "storms": {
-        "sid": "object",
-        "atcf_id": "object",
-        "number": "int16",
-        "season": "int64",
-        "name": "object",
-        "genesis_basin": "object",
-        "provisional": "bool",
-        "storm_id": "object",
+    strict=True,
+    coerce=True,
+    unique=["sid", "storm_id"],
+    report_duplicates="all",
+)
+
+TRACK_SCHEMA = pa.DataFrameSchema(
+    {
+        # TODO: Investigate condition where wind speed is -1
+        "wind_speed": pa.Column(
+            "Int64", pa.Check.between(-1, 300), nullable=True
+        ),
+        "pressure": pa.Column(
+            "Int64", pa.Check.between(800, 1100), nullable=True
+        ),
+        "max_wind_radius": pa.Column("Int64", pa.Check.ge(0), nullable=True),
+        "last_closed_isobar_radius": pa.Column(
+            "Int64", pa.Check.ge(0), nullable=True
+        ),
+        "last_closed_isobar_pressure": pa.Column(
+            "Int64", pa.Check.between(800, 1100), nullable=True
+        ),
+        "gust_speed": pa.Column(
+            "Int64", pa.Check.between(0, 400), nullable=True
+        ),
+        "sid": pa.Column(str, nullable=False),
+        # TODO: Investigate conditions where provider is NA
+        # Related to: https://groups.google.com/g/ibtracs-qa/c/OKzA9-ig0n0/m/GKNE5BeuDAAJ
+        "provider": pa.Column(str, nullable=True),
+        "basin": pa.Column(str, nullable=False),
+        "nature": pa.Column(str, nullable=True),
+        "valid_time": pa.Column(pd.Timestamp, nullable=False),
+        "quadrant_radius_34": pa.Column(
+            "object", checks=pa.Check(check_quadrant_list), nullable=False
+        ),
+        "quadrant_radius_50": pa.Column(
+            "object", checks=pa.Check(check_quadrant_list), nullable=False
+        ),
+        "quadrant_radius_64": pa.Column(
+            "object", checks=pa.Check(check_quadrant_list), nullable=True
+        ),
+        "point_id": pa.Column(str, nullable=False),
+        "storm_id": pa.Column(str, nullable=False),
+        "geometry": pa.Column(gpd.array.GeometryDtype, nullable=False),
     },
-}
+    strict=True,
+    coerce=True,
+    unique=["sid", "storm_id", "valid_time"],
+    report_duplicates="all",
+    checks=[
+        pa.Check(
+            lambda gdf: check_crs(gdf, "EPSG:4326"),
+            error="CRS must be EPSG:4326",
+        ),
+    ],
+)
 
 
 def download_ibtracs(
@@ -174,7 +213,7 @@ def get_storms(ds: xr.Dataset) -> pd.DataFrame:
     df_grouped["season"] = df_grouped["season"].astype(int)
     df_grouped["storm_id"] = df_grouped.apply(_create_storm_id, axis=1)
 
-    return df_grouped
+    return STORM_SCHEMA.validate(df_grouped)
 
 
 def get_tracks(ds: xr.Dataset, track_type: str = "all") -> gpd.GeoDataFrame:
@@ -295,8 +334,7 @@ def _get_provisional_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
     provisional_mask = ds_.track_type == b"PROVISIONAL"  # If stored as bytes
 
     if not provisional_mask.any():
-        schema = IBTRACS_CONFIG["tracks"]
-        return pd.DataFrame(columns=list(schema.keys())).astype(schema)
+        return TRACK_SCHEMA.example(size=0)
 
     ds_ = ds_.where(provisional_mask, drop=True)
     df = ds_.to_dataframe().reset_index()
@@ -338,7 +376,7 @@ def _get_provisional_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
 
     df = _convert_track_column_types(merged_df)
     gdf = _to_gdf(df)
-    return gdf
+    return TRACK_SCHEMA.validate(gdf)
 
 
 def _get_best_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
@@ -398,8 +436,7 @@ def _get_best_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
     # also don't have an assigned wmo_agency, but still good to be sure
     df = df[(df["wmo_agency"] != b"") & (df["track_type"] != b"PROVISIONAL")]
     if len(df) == 0:
-        schema = IBTRACS_CONFIG["tracks"]
-        return pd.DataFrame(columns=list(schema.keys())).astype(schema)
+        return TRACK_SCHEMA.example(size=0)
 
     df = _convert_string_columns(df, string_cols)
 
@@ -487,7 +524,7 @@ def _get_best_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
 
     df = _convert_track_column_types(merged_df)
     gdf = _to_gdf(df)
-    return gdf
+    return TRACK_SCHEMA.validate(gdf)
 
 
 def _convert_string_columns(
@@ -520,20 +557,20 @@ def _convert_track_column_types(df):
     df_ = df.copy()
     df_ = df_.round({"latitude": 2, "longitude": 2})
     df_["valid_time"] = df_["valid_time"].dt.round("min")
-    for col in [
-        "wind_speed",
-        "gust_speed",
-        "pressure",
-        "last_closed_isobar_radius",
-        "last_closed_isobar_pressure",
-        "max_wind_radius",
-    ]:
-        df_[col] = df[col].astype("Int64")
-    for col in [
-        "latitude",
-        "longitude",
-    ]:
-        df_[col] = df[col].astype("float32")
+    # for col in [
+    #     "wind_speed",
+    #     "gust_speed",
+    #     "pressure",
+    #     "last_closed_isobar_radius",
+    #     "last_closed_isobar_pressure",
+    #     "max_wind_radius",
+    # ]:
+    #     df_[col] = df[col].astype("Int64")
+    # for col in [
+    #     "latitude",
+    #     "longitude",
+    # ]:
+    #     df_[col] = df[col].astype("float32")
     return df_
 
 
