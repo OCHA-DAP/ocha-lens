@@ -30,7 +30,8 @@ classifiers = [
 dependencies = [
     "pandas>=2.2.2",
     "xarray>=2024.7.0",
-    "netcdf4==1.7.2"
+    "netcdf4==1.7.2",
+    "geopandas>=1.0.1"
 ]
 dynamic = ["version"]
 
