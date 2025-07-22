@@ -14,8 +14,7 @@ The `ibtracs` module provides utilities for downloading, loading, and processing
 ### Track Data Extraction
 
 ```{eval-rst}
-.. autofunction:: ocha_lens.ibtracs.get_provisional_tracks
-.. autofunction:: ocha_lens.ibtracs.get_best_tracks
+.. autofunction:: ocha_lens.ibtracs.get_tracks
 ```
 
 ### Storm Metadata
