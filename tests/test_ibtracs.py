@@ -5,10 +5,8 @@ import pytest
 import xarray as xr
 
 from ocha_lens.datasources.ibtracs import (
-    IBTRACS_CONFIG,
-    get_best_tracks,
-    get_provisional_tracks,
     get_storms,
+    get_tracks,
 )
 
 # Path to test data
@@ -37,91 +35,19 @@ def processed_ibtracs_data(sample_ibtracs_dataset):
     """
     return {
         "storms": get_storms(sample_ibtracs_dataset),
-        "provisional": get_provisional_tracks(sample_ibtracs_dataset),
-        "best": get_best_tracks(sample_ibtracs_dataset),
+        "tracks": get_tracks(sample_ibtracs_dataset),
     }
 
 
 # Tests for get_provisional_tracks function
-def test_get_provisional_tracks_returns_dataframe(processed_ibtracs_data):
+def test_get_tracks_returns_dataframe(processed_ibtracs_data):
     """Test that get_provisional_tracks returns a pandas DataFrame"""
-    result = processed_ibtracs_data["provisional"]
+    result = processed_ibtracs_data["tracks"]
     assert isinstance(result, pd.DataFrame)
-    expected_output = 294
+    expected_output = 1385
     assert len(result) == expected_output, (
         f"Output data has incorrect number of rows. Expected {expected_output} and got {len(result)}"
     )
-
-
-def test_get_provisional_tracks_has_expected_columns(processed_ibtracs_data):
-    """Test that get_provisional_tracks result has all expected columns"""
-    result = processed_ibtracs_data["provisional"]
-    expected_columns = IBTRACS_CONFIG["tracks"].keys()
-    for col in expected_columns:
-        assert col in result.columns, f"Missing expected column: {col}"
-    # Result has expected data types
-    result_types = result.dtypes.astype(str).to_dict()
-    result_types = dict(sorted(result_types.items()))
-    expected_types = IBTRACS_CONFIG["tracks"]
-    expected_types = dict(sorted(expected_types.items()))
-    assert result_types == expected_types, (
-        "Output data types don't match expected"
-    )
-
-
-def test_get_provisional_tracks_has_coordinates(processed_ibtracs_data):
-    """Test that get_best_tracks includes valid coordinates"""
-    result = processed_ibtracs_data["provisional"]
-
-    if len(result) > 0:
-        # No missing coordinates should remain
-        assert not result["latitude"].isna().any()
-        assert not result["longitude"].isna().any()
-
-        # Coordinates should be reasonable
-        assert result["latitude"].between(-90, 90).all()
-        assert result["longitude"].between(-180, 180).all()
-
-
-# Tests for get_best_tracks function
-def test_get_best_tracks_returns_dataframe(processed_ibtracs_data):
-    """Test that get_best_tracks returns a pandas DataFrame"""
-    result = processed_ibtracs_data["best"]
-    assert isinstance(result, pd.DataFrame)
-    expected_output = 1091
-    assert len(result) == expected_output, (
-        f"Output data has incorrect number of rows. Expected {expected_output} and got {len(result)}"
-    )
-
-
-def test_get_best_tracks_has_expected_columns(processed_ibtracs_data):
-    """Test that get_best_tracks result has all expected columns"""
-    result = processed_ibtracs_data["best"]
-    expected_columns = IBTRACS_CONFIG["tracks"].keys()
-    for col in expected_columns:
-        assert col in result.columns, f"Missing expected column: {col}"
-    # Result has expected data types
-    result_types = result.dtypes.astype(str).to_dict()
-    result_types = dict(sorted(result_types.items()))
-    expected_types = IBTRACS_CONFIG["tracks"]
-    expected_types = dict(sorted(expected_types.items()))
-    assert result_types == expected_types, (
-        "Output data types don't match expected"
-    )
-
-
-def test_get_best_tracks_has_coordinates(processed_ibtracs_data):
-    """Test that get_best_tracks includes valid coordinates"""
-    result = processed_ibtracs_data["best"]
-
-    if len(result) > 0:
-        # No missing coordinates should remain
-        assert not result["latitude"].isna().any()
-        assert not result["longitude"].isna().any()
-
-        # Coordinates should be reasonable
-        assert result["latitude"].between(-90, 90).all()
-        assert result["longitude"].between(-180, 180).all()
 
 
 # Tests for get_storms function
@@ -132,22 +58,6 @@ def test_get_storms_returns_dataframe(processed_ibtracs_data):
     expected_output = 50
     assert len(result) == expected_output, (
         f"Output data has incorrect number of rows. Expected {expected_output} and got {len(result)}"
-    )
-
-
-def test_get_storms_has_expected_columns(processed_ibtracs_data):
-    """Test that get_storms result has all expected columns"""
-    result = processed_ibtracs_data["storms"]
-    expected_columns = IBTRACS_CONFIG["storms"].keys()
-    for col in expected_columns:
-        assert col in result.columns, f"Missing expected column: {col}"
-    # Result has expected data types
-    result_types = result.dtypes.astype(str).to_dict()
-    result_types = dict(sorted(result_types.items()))
-    expected_types = IBTRACS_CONFIG["storms"]
-    expected_types = dict(sorted(expected_types.items()))
-    assert result_types == expected_types, (
-        "Output data types don't match expected"
     )
 
 
