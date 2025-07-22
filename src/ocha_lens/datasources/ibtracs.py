@@ -557,20 +557,6 @@ def _convert_track_column_types(df):
     df_ = df.copy()
     df_ = df_.round({"latitude": 2, "longitude": 2})
     df_["valid_time"] = df_["valid_time"].dt.round("min")
-    # for col in [
-    #     "wind_speed",
-    #     "gust_speed",
-    #     "pressure",
-    #     "last_closed_isobar_radius",
-    #     "last_closed_isobar_pressure",
-    #     "max_wind_radius",
-    # ]:
-    #     df_[col] = df[col].astype("Int64")
-    # for col in [
-    #     "latitude",
-    #     "longitude",
-    # ]:
-    #     df_[col] = df[col].astype("float32")
     return df_
 
 
