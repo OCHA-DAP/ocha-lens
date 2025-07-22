@@ -4,6 +4,8 @@ accessible-pygments==0.0.5
     # via furo
 alabaster==1.0.0
     # via sphinx
+annotated-types==0.7.0
+    # via pydantic
 babel==2.17.0
     # via sphinx
 beautifulsoup4==4.13.4
@@ -54,6 +56,8 @@ mdit-py-plugins==0.4.2
     # via myst-parser
 mdurl==0.1.2
     # via markdown-it-py
+mypy-extensions==1.1.0
+    # via typing-inspect
 myst-parser==4.0.1
     # via ocha-lens (pyproject.toml)
 netcdf4==1.7.2
@@ -72,6 +76,7 @@ numpy==2.3.1
 packaging==25.0
     # via
     #   geopandas
+    #   pandera
     #   pyogrio
     #   pytest
     #   sphinx
@@ -81,12 +86,18 @@ pandas==2.3.1
     #   ocha-lens (pyproject.toml)
     #   geopandas
     #   xarray
+pandera==0.25.0
+    # via ocha-lens (pyproject.toml)
 platformdirs==4.3.8
     # via virtualenv
 pluggy==1.6.0
     # via pytest
 pre-commit==4.2.0
     # via ocha-lens (pyproject.toml)
+pydantic==2.11.7
+    # via pandera
+pydantic-core==2.33.2
+    # via pydantic
 pygments==2.19.2
     # via
     #   accessible-pygments
@@ -146,8 +157,21 @@ sphinxcontrib-qthelp==2.0.0
     # via sphinx
 sphinxcontrib-serializinghtml==2.0.0
     # via sphinx
+typeguard==4.4.4
+    # via pandera
 typing-extensions==4.14.1
-    # via beautifulsoup4
+    # via
+    #   beautifulsoup4
+    #   pandera
+    #   pydantic
+    #   pydantic-core
+    #   typeguard
+    #   typing-inspect
+    #   typing-inspection
+typing-inspect==0.9.0
+    # via pandera
+typing-inspection==0.4.1
+    # via pydantic
 tzdata==2025.2
     # via pandas
 urllib3==2.5.0
