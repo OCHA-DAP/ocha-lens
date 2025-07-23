@@ -13,7 +13,11 @@ import pandera.pandas as pa
 import xarray as xr
 from shapely.geometry import Point
 
-from ocha_lens.utils.validation import check_crs, check_quadrant_list
+from ocha_lens.utils.validation import (
+    check_coordinate_bounds,
+    check_crs,
+    check_quadrant_list,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +28,7 @@ STORM_SCHEMA = pa.DataFrameSchema(
         "atcf_id": pa.Column(str, nullable=True),
         "number": pa.Column("int16", nullable=False),
         "season": pa.Column(
-            "int64", pa.Check.between(1850, 2100), nullable=False
+            "int64", pa.Check.between(1840, 2100), nullable=False
         ),
         "name": pa.Column(str, nullable=True),
         "genesis_basin": pa.Column(str, nullable=False),
@@ -84,6 +88,10 @@ TRACK_SCHEMA = pa.DataFrameSchema(
         pa.Check(
             lambda gdf: check_crs(gdf, "EPSG:4326"),
             error="CRS must be EPSG:4326",
+        ),
+        pa.Check(
+            lambda gdf: check_coordinate_bounds(gdf),
+            error="All coordinates must be within valid lat/lon bounds",
         ),
     ],
 )
@@ -375,6 +383,7 @@ def _get_provisional_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
     assert len(merged_df) == len(result_df)
 
     df = _convert_track_column_types(merged_df)
+    df = _normalize_longitude(df)
     gdf = _to_gdf(df)
     return TRACK_SCHEMA.validate(gdf)
 
@@ -509,10 +518,8 @@ def _get_best_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
         inplace=True,
     )
     result_df = result_df.drop(columns=["track_type"])
-    # TODO: Probably a bit overkill in the ids here (and also not really readable)
-    # Should think about how to best improve
     result_df["point_id"] = [str(uuid.uuid4()) for _ in range(len(result_df))]
-    # TODO: Drop points that have null values in non-nullable columns
+    # Drop points that have null values in non-nullable columns
     result_df = result_df.dropna(
         subset=["latitude", "longitude", "valid_time", "sid"]
     )
@@ -523,6 +530,7 @@ def _get_best_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
     assert len(merged_df) == len(result_df)
 
     df = _convert_track_column_types(merged_df)
+    df = _normalize_longitude(df)
     gdf = _to_gdf(df)
     return TRACK_SCHEMA.validate(gdf)
 
@@ -574,3 +582,15 @@ def _create_storm_id(row):
     name_part = str(row["number"]) if pd.isna(row["name"]) else row["name"]
     storm_id = f"{name_part}_{row['genesis_basin']}_{row['season']}".lower()
     return storm_id
+
+
+def _normalize_longitude(df, longitude_col="longitude"):
+    """
+    Convert longitude values >180° back to -180 to 180° range.
+    """
+    df_normalized = df.copy()
+    mask = df_normalized[longitude_col] > 180
+    df_normalized.loc[mask, longitude_col] = (
+        df_normalized.loc[mask, longitude_col] - 360
+    )
+    return df_normalized
