@@ -31,12 +31,6 @@ pip install -e ".[dev]"
 
 ## Environment Configuration
 
-This package depends on the following environment variables:
-
-```bash
-TODO
-```
-
 ## Dependencies
 
 ocha-lens requires Python 3.10 or later and depends on:
