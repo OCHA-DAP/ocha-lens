@@ -302,9 +302,17 @@ def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
     """
     # Some duplication of effort here, but want to keep API similar with IBTrACS
     df_storms = get_storms(df)
-    df_tracks = df.merge(df_storms[["name", "season", "storm_id"]], how="left")
+    df["name"] = df["name"].str.upper()
+    df["basin"] = df.apply(_convert_basin, axis=1)
+    # TODO: Confirm how this performs in storms that cross basins
+    df_tracks = df.merge(
+        df_storms[["name", "season", "genesis_basin", "storm_id"]],
+        left_on=["name", "basin"],
+        right_on=["name", "genesis_basin"],
+        how="left",
+    )
     assert len(df_tracks) == len(df)
-    df_tracks["basin"] = df_tracks.apply(_convert_basin, axis=1)
+
     df_tracks = df_tracks.drop(columns=["season", "name", "number"])
     df_tracks = df_tracks.rename(columns={"id": "forecast_id"})
     df_tracks["point_id"] = [str(uuid.uuid4()) for _ in range(len(df_tracks))]
@@ -316,9 +324,10 @@ def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
         ],
         crs="EPSG:4326",
     )
-    gdf_tracks = gdf_tracks.drop(["latitude", "longitude"], axis=1)
+    gdf_tracks = gdf_tracks.drop(
+        ["latitude", "longitude", "genesis_basin"], axis=1
+    )
     assert len(gdf_tracks == len(df))
-
     return TRACK_SCHEMA.validate(gdf_tracks)
 
 
