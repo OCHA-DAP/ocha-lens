@@ -15,6 +15,12 @@ import requests
 from dateutil import rrule
 from shapely.geometry import Point
 
+from ocha_lens.utils.validation import (
+    check_coordinate_bounds,
+    check_crs,
+    check_unique_when_storm_id_not_null,
+)
+
 logger = logging.getLogger(__name__)
 
 BASIN_MAPPING = {
@@ -39,6 +45,8 @@ STORM_SCHEMA = pa.DataFrameSchema(
     },
     strict=True,
     coerce=True,
+    unique=["storm_id"],
+    report_duplicates="all",
 )
 
 TRACK_SCHEMA = pa.DataFrameSchema(
@@ -63,6 +71,20 @@ TRACK_SCHEMA = pa.DataFrameSchema(
     },
     strict=True,
     coerce=True,
+    checks=[
+        pa.Check(
+            lambda gdf: check_crs(gdf, "EPSG:4326"),
+            error="CRS must be EPSG:4326",
+        ),
+        pa.Check(
+            lambda gdf: check_coordinate_bounds(gdf),
+            error="All coordinates must be within valid lat/lon bounds",
+        ),
+        pa.Check(
+            check_unique_when_storm_id_not_null,
+            error="Duplicate combination of storm_id, valid_time, leadtime found (excluding null storm_ids)",
+        ),
+    ],
 )
 
 
@@ -231,10 +253,10 @@ def load_hindcasts(
     return
 
 
-def get_storms(df: pd.DataFrame) -> pd.DataFrame:
+def get_forecasts(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Processes ECMWF tropical cyclone forecast data to create a storms dataset
-    with one row per storm containing identifying information. Only storms with
+    Processes ECMWF tropical cyclone forecast data to create a forecasts dataset
+    with one row per forecast containing identifying information. Only storms with
     names are included in the output.
 
     Parameters
@@ -253,29 +275,52 @@ def get_storms(df: pd.DataFrame) -> pd.DataFrame:
     For storms with multiple forecasts, metadata is taken from the most recent forecast.
     Season calculation accounts for Southern Hemisphere cyclone seasons.
     """
-    df = df.copy()
-    df["name"] = df["name"].str.upper()
-    df["season"] = df.apply(_convert_season, axis=1)
-    df["basin"] = df.apply(_convert_basin, axis=1)
+    df_ = df.copy()
+    df_["name"] = df_["name"].str.upper()
+    df_["season"] = df_.apply(_convert_season, axis=1)
+    df_["basin"] = df_.apply(_convert_basin, axis=1)
 
-    # We're only identifying storms that have names
-    df_ = df.dropna(subset="name").copy()
-    df_.loc[:, "storm_id"] = df_.apply(_create_storm_id, axis=1)
-    df_ = df_.sort_values("issued_time")
+    # Note that we're not grouping by basin since it is not necessarily
+    # constant across a single storm. We're also not grouping by just
+    # forecast_id, since some forecast id's aren't unique
+    df_sorted = df_.sort_values("issued_time")
     df_forecasts = (
-        df_.groupby(["id", "issued_time", "name", "number"])[
-            ["storm_id", "provider", "season", "basin"]
+        df_sorted.groupby(["id", "number"])[
+            ["provider", "season", "basin", "name", "issued_time"]
         ]
         .first()
         .reset_index()
     )
 
+    df_forecasts.loc[:, "storm_id"] = df_forecasts.apply(
+        _create_storm_id, axis=1
+    )
+    return df_forecasts
+
+
+def get_storms(df):
+    """
+    Processes ECMWF tropical cyclone forecast data to create a storms dataset
+    with one row per storm containing identifying information. Only storms with
+    names are included in the output.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame containing raw ECMWF forecast data
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame containing storm metadata with with one row per storm
+    """
+    df_forecasts = get_forecasts(df)
+    # Only keep named storms
+    df_forecasts_ = df_forecasts.dropna(subset="name").copy()
     # Note that a single storm may have different numbers during its forecast lifecycle
     # We're picking the one from the last forecast
     # TODO: Check that we're not dropping different storms that have ended up with the same id??
-    df_storms = df_forecasts.sort_values(
-        "issued_time", ascending=False
-    ).drop_duplicates(subset=["storm_id"])
+    df_storms = df_forecasts_.drop_duplicates(subset=["storm_id"])
     df_storms = df_storms.drop(columns=["id", "issued_time"])
     df_storms = df_storms.rename(columns={"basin": "genesis_basin"})
     return STORM_SCHEMA.validate(df_storms)
@@ -300,23 +345,25 @@ def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
         GeoDataFrame containing track data with standardized column names and
         geometry points for each location
     """
-    # Some duplication of effort here, but want to keep API similar with IBTrACS
-    df_storms = get_storms(df)
-    df["name"] = df["name"].str.upper()
-    df["basin"] = df.apply(_convert_basin, axis=1)
-    # TODO: Confirm how this performs in storms that cross basins
-    df_tracks = df.merge(
-        df_storms[["name", "season", "genesis_basin", "storm_id"]],
-        left_on=["name", "basin"],
-        right_on=["name", "genesis_basin"],
+    df_ = df.copy()
+
+    # Merge in the storm_ids
+    df_forecasts = get_forecasts(df_)
+    df_tracks = df_.merge(
+        df_forecasts[["id", "number", "storm_id"]],
+        left_on=["id", "number"],
+        right_on=["id", "number"],
         how="left",
     )
-    assert len(df_tracks) == len(df)
+    assert len(df_tracks) == len(df_)
 
-    df_tracks = df_tracks.drop(columns=["season", "name", "number"])
+    # Basic column transformation
+    df_tracks["basin"] = df_tracks.apply(_convert_basin, axis=1)
+    df_tracks = df_tracks.drop(columns=["name", "number"])
     df_tracks = df_tracks.rename(columns={"id": "forecast_id"})
     df_tracks["point_id"] = [str(uuid.uuid4()) for _ in range(len(df_tracks))]
-    df_tracks["pressure"] = df_tracks["pressure"]
+
+    # Transform to geodataframe
     gdf_tracks = gpd.GeoDataFrame(
         df_tracks,
         geometry=[
@@ -324,9 +371,7 @@ def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
         ],
         crs="EPSG:4326",
     )
-    gdf_tracks = gdf_tracks.drop(
-        ["latitude", "longitude", "genesis_basin"], axis=1
-    )
+    gdf_tracks = gdf_tracks.drop(["latitude", "longitude"], axis=1)
     assert len(gdf_tracks == len(df))
     return TRACK_SCHEMA.validate(gdf_tracks)
 
@@ -443,9 +488,9 @@ def _get_raw_filename(date):
 
 
 def _create_storm_id(row):
-    name_part = str(row["number"]) if pd.isna(row["name"]) else row["name"]
-    storm_id = f"{name_part}_{row['basin']}_{row['season']}".lower()
-    return storm_id
+    if row["name"]:
+        return f"{row['name']}_{row['basin']}_{row['season']}".lower()
+    return row["name"]
 
 
 def _convert_basin(row):

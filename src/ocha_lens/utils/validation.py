@@ -25,3 +25,14 @@ def check_coordinate_bounds(gdf):
         return False
 
     return gdf.geometry.apply(validate_point).all()
+
+
+def check_unique_when_storm_id_not_null(df):
+    # Filter out rows where storm_id is null
+    filtered_df = df.dropna(subset=["storm_id"])
+
+    # Check if the combination is unique in the filtered data
+    duplicates = filtered_df.duplicated(
+        subset=["storm_id", "valid_time", "leadtime"]
+    )
+    return ~duplicates.any()
