@@ -1,9 +1,12 @@
 # ocha-lens Documentation
 
 ```{toctree}
-:maxdepth: 3
+:maxdepth: 2
 :caption: Contents
 
+installation
+datasets/index
+api
 ```
 
 ## Overview
@@ -16,3 +19,5 @@ Install the package:
 ```bash
 pip install ocha-lens
 ```
+
+For detailed information about working with specific datasets, see the [Datasets](datasets/index.md) section.
