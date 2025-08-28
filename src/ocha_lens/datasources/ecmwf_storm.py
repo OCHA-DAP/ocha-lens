@@ -281,8 +281,8 @@ def get_forecasts(df: pd.DataFrame) -> pd.DataFrame:
     df_["basin"] = df_.apply(_convert_basin, axis=1)
 
     # Note that we're not grouping by basin since it is not necessarily
-    # constant across a single storm. We're also not grouping by just
-    # forecast_id, since some forecast id's aren't unique
+    # constant across a single storm. We're also not grouping by just id,
+    # since some forecast id's aren't unique
     df_sorted = df_.sort_values("issued_time")
     df_forecasts = (
         df_sorted.groupby(["id", "number"])[
@@ -298,7 +298,7 @@ def get_forecasts(df: pd.DataFrame) -> pd.DataFrame:
     return df_forecasts
 
 
-def get_storms(df):
+def get_storms(df: pd.DataFrame) -> pd.DataFrame:
     """
     Processes ECMWF tropical cyclone forecast data to create a storms dataset
     with one row per storm containing identifying information. Only storms with
