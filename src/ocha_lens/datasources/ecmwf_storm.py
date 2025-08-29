@@ -370,6 +370,12 @@ def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
     df_tracks = df_tracks.rename(columns={"id": "forecast_id"})
     df_tracks["point_id"] = [str(uuid.uuid4()) for _ in range(len(df_tracks))]
 
+    # Make sure time is all in a consistent format
+    # in 2022 ECMWF switched from timezone-aware to not
+    df_tracks["issued_time"] = pd.to_datetime(
+        df_tracks["issued_time"].astype(str), utc=True, format="mixed"
+    )
+
     # Transform to geodataframe
     gdf_tracks = gpd.GeoDataFrame(
         df_tracks,
