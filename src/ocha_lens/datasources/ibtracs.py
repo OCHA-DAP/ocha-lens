@@ -33,7 +33,7 @@ STORM_SCHEMA = pa.DataFrameSchema(
         "name": pa.Column(str, nullable=True),
         "genesis_basin": pa.Column(str, nullable=False),
         "provisional": pa.Column(bool, nullable=False),
-        "storm_id": pa.Column(str, nullable=False),
+        "storm_id": pa.Column(str, nullable=True),
     },
     strict=True,
     coerce=True,
@@ -585,9 +585,9 @@ def _to_gdf(df):
 
 
 def _create_storm_id(row):
-    name_part = str(row["number"]) if pd.isna(row["name"]) else row["name"]
-    storm_id = f"{name_part}_{row['genesis_basin']}_{row['season']}".lower()
-    return storm_id
+    if row["name"]:
+        return f"{row['name']}_{row['genesis_basin']}_{row['season']}".lower()
+    return row["name"]
 
 
 def _normalize_longitude(df, longitude_col="longitude"):
