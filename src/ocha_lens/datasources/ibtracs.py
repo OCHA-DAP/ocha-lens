@@ -247,7 +247,7 @@ def get_tracks(ds: xr.Dataset, track_type: str = "all") -> gpd.GeoDataFrame:
     elif track_type == "all":
         df_provisional = _get_provisional_tracks(ds)
         df_best = _get_best_tracks(ds)
-        return pd.concat([df_provisional, df_best])
+        return TRACK_SCHEMA.validate(pd.concat([df_provisional, df_best]))
     else:
         logger.error(
             f"Invalid track type: {track_type}. Must be either `provisional` or `best`."
@@ -342,7 +342,7 @@ def _get_provisional_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
     provisional_mask = ds_.track_type == b"PROVISIONAL"  # If stored as bytes
 
     if not provisional_mask.any():
-        return TRACK_SCHEMA.example(size=0)
+        return pd.DataFrame(columns=list(TRACK_SCHEMA.columns.keys()))
 
     ds_ = ds_.where(provisional_mask, drop=True)
     df = ds_.to_dataframe().reset_index()
@@ -385,6 +385,9 @@ def _get_provisional_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
     df = _convert_track_column_types(merged_df)
     df = _normalize_longitude(df)
     gdf = _to_gdf(df)
+    if len(gdf) == 0:
+        logger.warning("Returning empty geodataframe of provisional tracks")
+        return gdf
     return TRACK_SCHEMA.validate(gdf)
 
 
@@ -445,7 +448,7 @@ def _get_best_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
     # also don't have an assigned wmo_agency, but still good to be sure
     df = df[(df["wmo_agency"] != b"") & (df["track_type"] != b"PROVISIONAL")]
     if len(df) == 0:
-        return TRACK_SCHEMA.example(size=0)
+        return pd.DataFrame(columns=list(TRACK_SCHEMA.columns.keys()))
 
     df = _convert_string_columns(df, string_cols)
 
@@ -532,6 +535,9 @@ def _get_best_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
     df = _convert_track_column_types(merged_df)
     df = _normalize_longitude(df)
     gdf = _to_gdf(df)
+    if len(gdf) == 0:
+        logger.warning("Returning empty geodataframe of best tracks")
+        return gdf
     return TRACK_SCHEMA.validate(gdf)
 
 
