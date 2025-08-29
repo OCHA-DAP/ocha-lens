@@ -82,6 +82,7 @@ TRACK_SCHEMA = pa.DataFrameSchema(
         ),
         pa.Check(
             check_unique_when_storm_id_not_null,
+            raise_warning=True,
             error="Duplicate combination of storm_id, valid_time, leadtime found (excluding null storm_ids)",
         ),
     ],
@@ -280,6 +281,12 @@ def get_forecasts(df: pd.DataFrame) -> pd.DataFrame:
     df_["season"] = df_.apply(_convert_season, axis=1)
     df_["basin"] = df_.apply(_convert_basin, axis=1)
 
+    # Make sure time is all in a consistent format
+    # in 2022 ECMWF switched from timezone-aware to not
+    df_["issued_time"] = pd.to_datetime(
+        df_["issued_time"].astype(str), utc=True, format="mixed"
+    )
+
     # Note that we're not grouping by basin since it is not necessarily
     # constant across a single storm. We're also not grouping by just id,
     # since some forecast id's aren't unique
@@ -372,7 +379,7 @@ def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
         crs="EPSG:4326",
     )
     gdf_tracks = gdf_tracks.drop(["latitude", "longitude"], axis=1)
-    assert len(gdf_tracks == len(df))
+    assert len(gdf_tracks == len(df_))
     return TRACK_SCHEMA.validate(gdf_tracks)
 
 
