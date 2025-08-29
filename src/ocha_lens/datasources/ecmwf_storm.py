@@ -290,7 +290,7 @@ def get_forecasts(df: pd.DataFrame) -> pd.DataFrame:
     # Note that we're not grouping by basin since it is not necessarily
     # constant across a single storm. We're also not grouping by just id,
     # since some forecast id's aren't unique
-    df_sorted = df_.sort_values("issued_time")
+    df_sorted = df_.sort_values(["issued_time", "id"])
     df_forecasts = (
         df_sorted.groupby(["id", "number"])[
             ["provider", "season", "basin", "name", "issued_time"]
@@ -299,6 +299,7 @@ def get_forecasts(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
     )
 
+    df_forecasts = df_forecasts.rename(columns={"basin": "genesis_basin"})
     df_forecasts.loc[:, "storm_id"] = df_forecasts.apply(
         _create_storm_id, axis=1
     )
@@ -329,7 +330,6 @@ def get_storms(df: pd.DataFrame) -> pd.DataFrame:
     # TODO: Check that we're not dropping different storms that have ended up with the same id??
     df_storms = df_forecasts_.drop_duplicates(subset=["storm_id"])
     df_storms = df_storms.drop(columns=["id", "issued_time"])
-    df_storms = df_storms.rename(columns={"basin": "genesis_basin"})
     return STORM_SCHEMA.validate(df_storms)
 
 
@@ -502,14 +502,18 @@ def _get_raw_filename(date):
 
 def _create_storm_id(row):
     if row["name"]:
-        return f"{row['name']}_{row['basin']}_{row['season']}".lower()
+        return f"{row['name']}_{row['genesis_basin']}_{row['season']}".lower()
     return row["name"]
 
 
 def _convert_basin(row):
     basin = row["basin"]
     if row["basin"] == "Southwest Pacific":
-        basin = "South Indian" if row["longitude"] <= 135 else "South Pacific"
+        basin = (
+            "South Indian"
+            if (row["longitude"] > 0 and row["longitude"] <= 135)
+            else "South Pacific"
+        )
     try:
         standard_basin = BASIN_MAPPING[basin]
     except Exception:
