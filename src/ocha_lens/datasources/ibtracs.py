@@ -61,9 +61,7 @@ TRACK_SCHEMA = pa.DataFrameSchema(
             "Int64", pa.Check.between(0, 400), nullable=True
         ),
         "sid": pa.Column(str, nullable=False),
-        # TODO: Investigate conditions where provider is NA
-        # Related to: https://groups.google.com/g/ibtracs-qa/c/OKzA9-ig0n0/m/GKNE5BeuDAAJ
-        "provider": pa.Column(str, nullable=True),
+        "provider": pa.Column(str, nullable=False),
         "basin": pa.Column(str, nullable=False),
         "nature": pa.Column(str, nullable=True),
         "valid_time": pa.Column(pd.Timestamp, nullable=False),
@@ -347,7 +345,12 @@ def _get_provisional_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
     ds_ = ds_.where(provisional_mask, drop=True)
     df = ds_.to_dataframe().reset_index()
     df = _convert_string_columns(df, string_cols)
-    df = df.replace(b"", pd.NA).replace("", pd.NA).dropna(subset=["time"])
+    # Dropping interpolated points that don't have an assigned usa_agency
+    df = (
+        df.replace(b"", pd.NA)
+        .replace("", pd.NA)
+        .dropna(subset=["time", "usa_agency"])
+    )
     cols = usa_cols + other_cols + ["time", "quadrant"]
     df = df[cols]
 
