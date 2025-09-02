@@ -33,7 +33,7 @@ STORM_SCHEMA = pa.DataFrameSchema(
         "name": pa.Column(str, nullable=True),
         "genesis_basin": pa.Column(str, nullable=False),
         "provisional": pa.Column(bool, nullable=False),
-        "storm_id": pa.Column(str, nullable=False),
+        "storm_id": pa.Column(str, nullable=True),
     },
     strict=True,
     coerce=True,
@@ -61,9 +61,7 @@ TRACK_SCHEMA = pa.DataFrameSchema(
             "Int64", pa.Check.between(0, 400), nullable=True
         ),
         "sid": pa.Column(str, nullable=False),
-        # TODO: Investigate conditions where provider is NA
-        # Related to: https://groups.google.com/g/ibtracs-qa/c/OKzA9-ig0n0/m/GKNE5BeuDAAJ
-        "provider": pa.Column(str, nullable=True),
+        "provider": pa.Column(str, nullable=False),
         "basin": pa.Column(str, nullable=False),
         "nature": pa.Column(str, nullable=True),
         "valid_time": pa.Column(pd.Timestamp, nullable=False),
@@ -77,7 +75,7 @@ TRACK_SCHEMA = pa.DataFrameSchema(
             "object", checks=pa.Check(check_quadrant_list), nullable=True
         ),
         "point_id": pa.Column(str, nullable=False),
-        "storm_id": pa.Column(str, nullable=False),
+        "storm_id": pa.Column(str, nullable=True),
         "geometry": pa.Column(gpd.array.GeometryDtype, nullable=False),
     },
     strict=True,
@@ -247,7 +245,7 @@ def get_tracks(ds: xr.Dataset, track_type: str = "all") -> gpd.GeoDataFrame:
     elif track_type == "all":
         df_provisional = _get_provisional_tracks(ds)
         df_best = _get_best_tracks(ds)
-        return pd.concat([df_provisional, df_best])
+        return TRACK_SCHEMA.validate(pd.concat([df_provisional, df_best]))
     else:
         logger.error(
             f"Invalid track type: {track_type}. Must be either `provisional` or `best`."
@@ -342,12 +340,17 @@ def _get_provisional_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
     provisional_mask = ds_.track_type == b"PROVISIONAL"  # If stored as bytes
 
     if not provisional_mask.any():
-        return TRACK_SCHEMA.example(size=0)
+        return pd.DataFrame(columns=list(TRACK_SCHEMA.columns.keys()))
 
     ds_ = ds_.where(provisional_mask, drop=True)
     df = ds_.to_dataframe().reset_index()
     df = _convert_string_columns(df, string_cols)
-    df = df.replace(b"", pd.NA).replace("", pd.NA).dropna(subset=["time"])
+    # Dropping interpolated points that don't have an assigned usa_agency
+    df = (
+        df.replace(b"", pd.NA)
+        .replace("", pd.NA)
+        .dropna(subset=["time", "usa_agency"])
+    )
     cols = usa_cols + other_cols + ["time", "quadrant"]
     df = df[cols]
 
@@ -385,6 +388,9 @@ def _get_provisional_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
     df = _convert_track_column_types(merged_df)
     df = _normalize_longitude(df)
     gdf = _to_gdf(df)
+    if len(gdf) == 0:
+        logger.warning("Returning empty geodataframe of provisional tracks")
+        return gdf
     return TRACK_SCHEMA.validate(gdf)
 
 
@@ -445,7 +451,7 @@ def _get_best_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
     # also don't have an assigned wmo_agency, but still good to be sure
     df = df[(df["wmo_agency"] != b"") & (df["track_type"] != b"PROVISIONAL")]
     if len(df) == 0:
-        return TRACK_SCHEMA.example(size=0)
+        return pd.DataFrame(columns=list(TRACK_SCHEMA.columns.keys()))
 
     df = _convert_string_columns(df, string_cols)
 
@@ -532,6 +538,9 @@ def _get_best_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
     df = _convert_track_column_types(merged_df)
     df = _normalize_longitude(df)
     gdf = _to_gdf(df)
+    if len(gdf) == 0:
+        logger.warning("Returning empty geodataframe of best tracks")
+        return gdf
     return TRACK_SCHEMA.validate(gdf)
 
 
@@ -579,9 +588,9 @@ def _to_gdf(df):
 
 
 def _create_storm_id(row):
-    name_part = str(row["number"]) if pd.isna(row["name"]) else row["name"]
-    storm_id = f"{name_part}_{row['genesis_basin']}_{row['season']}".lower()
-    return storm_id
+    if pd.notna(row["name"]) and row["name"]:
+        return f"{row['name']}_{row['genesis_basin']}_{row['season']}".lower()
+    return row["name"]
 
 
 def _normalize_longitude(df, longitude_col="longitude"):

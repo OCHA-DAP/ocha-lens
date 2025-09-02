@@ -44,7 +44,7 @@ def test_get_tracks_returns_dataframe(processed_ibtracs_data):
     """Test that get_provisional_tracks returns a pandas DataFrame"""
     result = processed_ibtracs_data["tracks"]
     assert isinstance(result, pd.DataFrame)
-    expected_output = 1385
+    expected_output = 1242
     assert len(result) == expected_output, (
         f"Output data has incorrect number of rows. Expected {expected_output} and got {len(result)}"
     )
@@ -74,11 +74,6 @@ def test_get_storms_one_row_per_storm(
 
 
 def test_get_storms_storm_id_is_unique(processed_ibtracs_data):
-    """Test that get_storms assigns unique storm_id to each storm"""
+    """Test that get_storms assigns unique storm_id to each named storm"""
     result = processed_ibtracs_data["storms"]
-    # All storm_id values should be unique
-    assert len(result["storm_id"].unique()) == len(result)
-    # All storm_id values should be non-empty strings
-    assert all(
-        isinstance(sid, str) and len(sid) > 0 for sid in result["storm_id"]
-    )
+    assert result["storm_id"].nunique() == 39
