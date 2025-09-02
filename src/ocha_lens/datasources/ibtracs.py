@@ -585,7 +585,7 @@ def _to_gdf(df):
 
 
 def _create_storm_id(row):
-    if row["name"]:
+    if pd.notna(row["name"]) and row["name"]:
         return f"{row['name']}_{row['genesis_basin']}_{row['season']}".lower()
     return row["name"]
 
