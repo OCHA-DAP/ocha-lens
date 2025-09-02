@@ -376,11 +376,30 @@ def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
         df_tracks["issued_time"].astype(str), utc=True, format="mixed"
     )
 
+    # Drop all rows where our primary variables of interest are 0
+    # assuming this is some data quality issue
+    mask = (
+        (df_tracks["pressure"] == 0)
+        & (df_tracks["wind_speed"] == 0)
+        & (df_tracks["latitude"] == 0)
+        & (df_tracks["longitude"] == 0)
+    )
+    df_tracks_dropped = df_tracks.drop(df_tracks[mask].index)
+
+    diff = len(df_tracks) - len(df_tracks_dropped)
+    if diff > 0:
+        logger.warning(
+            f"Dropped {diff} tracks with invalid positional and intensity values"
+        )
+
     # Transform to geodataframe
     gdf_tracks = gpd.GeoDataFrame(
-        df_tracks,
+        df_tracks_dropped,
         geometry=[
-            Point(xy) for xy in zip(df_tracks.longitude, df_tracks.latitude)
+            Point(xy)
+            for xy in zip(
+                df_tracks_dropped.longitude, df_tracks_dropped.latitude
+            )
         ],
         crs="EPSG:4326",
     )
