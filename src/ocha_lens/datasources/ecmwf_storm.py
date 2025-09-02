@@ -96,7 +96,7 @@ def download_hindcasts(
     date: datetime,
     save_dir: str = "storm",
     use_cache: bool = False,
-    skip_if_missing: bool = True,
+    skip_if_missing: bool = False,
     stage: Literal["dev", "prod", "local"] = "local",
 ) -> Optional[Path]:
     """
