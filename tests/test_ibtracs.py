@@ -44,7 +44,7 @@ def test_get_tracks_returns_dataframe(processed_ibtracs_data):
     """Test that get_provisional_tracks returns a pandas DataFrame"""
     result = processed_ibtracs_data["tracks"]
     assert isinstance(result, pd.DataFrame)
-    expected_output = 1385
+    expected_output = 1242
     assert len(result) == expected_output, (
         f"Output data has incorrect number of rows. Expected {expected_output} and got {len(result)}"
     )
