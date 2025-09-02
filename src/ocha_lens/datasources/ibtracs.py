@@ -77,7 +77,7 @@ TRACK_SCHEMA = pa.DataFrameSchema(
             "object", checks=pa.Check(check_quadrant_list), nullable=True
         ),
         "point_id": pa.Column(str, nullable=False),
-        "storm_id": pa.Column(str, nullable=False),
+        "storm_id": pa.Column(str, nullable=True),
         "geometry": pa.Column(gpd.array.GeometryDtype, nullable=False),
     },
     strict=True,
