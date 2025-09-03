@@ -13,9 +13,11 @@ import pandas as pd
 import pandera.pandas as pa
 import requests
 from dateutil import rrule
-from shapely.geometry import Point
 
-from ocha_lens.utils.validation import (
+from ocha_lens.utils.storm import (
+    _create_storm_id,
+    _normalize_longitude,
+    _to_gdf,
     check_coordinate_bounds,
     check_crs,
     check_unique_when_storm_id_not_null,
@@ -392,21 +394,10 @@ def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
             f"Dropped {diff} tracks with invalid positional and intensity values"
         )
 
-    # Normalize coordinates
+    # Normalize coordinates and convert to gdf
     df_tracks_dropped = _normalize_longitude(df_tracks_dropped)
+    gdf_tracks = _to_gdf(df_tracks_dropped)
 
-    # Transform to geodataframe
-    gdf_tracks = gpd.GeoDataFrame(
-        df_tracks_dropped,
-        geometry=[
-            Point(xy)
-            for xy in zip(
-                df_tracks_dropped.longitude, df_tracks_dropped.latitude
-            )
-        ],
-        crs="EPSG:4326",
-    )
-    gdf_tracks = gdf_tracks.drop(["latitude", "longitude"], axis=1)
     assert len(gdf_tracks == len(df_))
     return TRACK_SCHEMA.validate(gdf_tracks)
 
@@ -522,12 +513,6 @@ def _get_raw_filename(date):
     return dspath + file
 
 
-def _create_storm_id(row):
-    if row["name"]:
-        return f"{row['name']}_{row['genesis_basin']}_{row['season']}".lower()
-    return row["name"]
-
-
 def _convert_basin(row):
     basin = row["basin"]
     if row["basin"] == "Southwest Pacific":
@@ -558,15 +543,3 @@ def _convert_season(row):
     if is_southern_hemisphere and is_july_or_later:
         season += 1
     return season
-
-
-def _normalize_longitude(df, longitude_col="longitude"):
-    """
-    Convert longitude values >180° back to -180 to 180° range.
-    """
-    df_normalized = df.copy()
-    mask = df_normalized[longitude_col] > 180
-    df_normalized.loc[mask, longitude_col] = (
-        df_normalized.loc[mask, longitude_col] - 360
-    )
-    return df_normalized

@@ -11,9 +11,11 @@ import numpy as np
 import pandas as pd
 import pandera.pandas as pa
 import xarray as xr
-from shapely.geometry import Point
 
-from ocha_lens.utils.validation import (
+from ocha_lens.utils.storm import (
+    _create_storm_id,
+    _normalize_longitude,
+    _to_gdf,
     check_coordinate_bounds,
     check_crs,
     check_quadrant_list,
@@ -575,31 +577,3 @@ def _convert_track_column_types(df):
     df_ = df_.round({"latitude": 2, "longitude": 2})
     df_["valid_time"] = df_["valid_time"].dt.round("min")
     return df_
-
-
-def _to_gdf(df):
-    gdf = gpd.GeoDataFrame(
-        df,
-        geometry=[Point(xy) for xy in zip(df.longitude, df.latitude)],
-        crs="EPSG:4326",
-    )
-    gdf = gdf.drop(["latitude", "longitude"], axis=1)
-    return gdf
-
-
-def _create_storm_id(row):
-    if pd.notna(row["name"]) and row["name"]:
-        return f"{row['name']}_{row['genesis_basin']}_{row['season']}".lower()
-    return row["name"]
-
-
-def _normalize_longitude(df, longitude_col="longitude"):
-    """
-    Convert longitude values >180° back to -180 to 180° range.
-    """
-    df_normalized = df.copy()
-    mask = df_normalized[longitude_col] > 180
-    df_normalized.loc[mask, longitude_col] = (
-        df_normalized.loc[mask, longitude_col] - 360
-    )
-    return df_normalized

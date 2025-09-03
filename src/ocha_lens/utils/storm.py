@@ -1,3 +1,36 @@
+import geopandas as gpd
+import pandas as pd
+from shapely.geometry import Point
+
+
+def _to_gdf(df):
+    gdf = gpd.GeoDataFrame(
+        df,
+        geometry=[Point(xy) for xy in zip(df.longitude, df.latitude)],
+        crs="EPSG:4326",
+    )
+    gdf = gdf.drop(["latitude", "longitude"], axis=1)
+    return gdf
+
+
+def _create_storm_id(row):
+    if pd.notna(row["name"]) and row["name"]:
+        return f"{row['name']}_{row['genesis_basin']}_{row['season']}".lower()
+    return row["name"]
+
+
+def _normalize_longitude(df, longitude_col="longitude"):
+    """
+    Convert longitude values >180° back to -180 to 180° range.
+    """
+    df_normalized = df.copy()
+    mask = df_normalized[longitude_col] > 180
+    df_normalized.loc[mask, longitude_col] = (
+        df_normalized.loc[mask, longitude_col] - 360
+    )
+    return df_normalized
+
+
 def check_crs(gdf, expected_crs="EPSG:4326"):
     """Check if GeoDataFrame has the expected CRS."""
     if gdf.crs is None:
