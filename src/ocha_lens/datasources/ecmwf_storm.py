@@ -392,6 +392,9 @@ def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
             f"Dropped {diff} tracks with invalid positional and intensity values"
         )
 
+    # Normalize coordinates
+    df_tracks_dropped = _normalize_longitude(df_tracks_dropped)
+
     # Transform to geodataframe
     gdf_tracks = gpd.GeoDataFrame(
         df_tracks_dropped,
@@ -555,3 +558,15 @@ def _convert_season(row):
     if is_southern_hemisphere and is_july_or_later:
         season += 1
     return season
+
+
+def _normalize_longitude(df, longitude_col="longitude"):
+    """
+    Convert longitude values >180° back to -180 to 180° range.
+    """
+    df_normalized = df.copy()
+    mask = df_normalized[longitude_col] > 180
+    df_normalized.loc[mask, longitude_col] = (
+        df_normalized.loc[mask, longitude_col] - 360
+    )
+    return df_normalized
