@@ -32,7 +32,21 @@ dependencies = [
     "xarray>=2024.7.0",
     "netcdf4==1.7.2",
     "geopandas>=1.0.1",
-    "pandera==0.25.0"
+    "pandera==0.25.0",
+    "aiohttp",
+    "azure-storage-blob",
+    "dask",
+    "duckdb",
+    "fsspec",
+    "geopandas",
+    "ipykernel",
+    "Jinja2",
+    "matplotlib",
+    "psycopg2-binary",
+    "pyarrow",
+    "rioxarray",
+    "sqlalchemy",
+    "tqdm"
 ]
 dynamic = ["version"]
 
