@@ -1,28 +1,33 @@
 import os
 from pathlib import Path
-from typing import Literal, Optional
+from typing import List, Literal, Optional, Union
 
 import cdsapi
 import pandas as pd
 import xarray as xr
+from azure.storage.blob import BlobClient
 
-DATASET_NAMES = {
+GLOFAS_DATASET_NAMES = {
     "reanalysis": "cems-glofas-reanalysis",
     "forecast": "cems-glofas-forecast",
     "reforecast": "cems-glofas-reforecast",
 }
+GLOFAS_VERSION = "version_4_0"
+GLOFAS_HYDROLOGICAL_MODEL = "lisflood"
 
 
 def download_glofas(
     dataset: Literal["reanalysis", "reforecast", "forecast"],
-    area,  # coords in list like [N, W, S, E]
-    years,  # eg. [2020, 2021, 2022]
-    months,  # eg. [1, 2, 3]
-    days,  # eg. [1, 2, 3, 4, 5]
-    leadtimes,  # eg. [24, 48, 72, 96] (must be hours in day increments)
-    output_dir: Optional[str],  # May also be an Azure blob client
+    area: List[float],  # coords in list like [N, W, S, E]
+    years: List[int],  # eg. [2020, 2021, 2022]
+    months: List[int],  # eg. [1, 2, 3]
+    days: List[int],  # eg. [1, 2, 3, 4, 5]
+    leadtimes: List[
+        int
+    ],  # eg. [24, 48, 72, 96] (must be hours in day increments)
+    output_dir: Union[str, Path, BlobClient],
     clobber: bool = True,
-) -> Path:  # Or Azure blob client?
+) -> Union[Path, str]:  # Returns Path for local, blob name for Azure
     """
     Downloads glofas data from cds api.
     1. clobber == True, overwrite if existing file is present
@@ -48,7 +53,7 @@ def download_glofas(
             request = _forecast_request(area, years, months, days, leadtimes)
 
         c = cdsapi.Client()
-        response = c.retrieve(DATASET_NAMES["dataset"], request)
+        response = c.retrieve(GLOFAS_DATASET_NAMES["dataset"], request)
         # TODO: Also handle if output is to Azure
         os.makedirs(output_dir, exist_ok=True)
         response.download(output_f)
@@ -97,16 +102,51 @@ def get_discharge(ds: xr.Dataset) -> pd.DataFrame:
 # ---------
 
 
-def _reanalysis_request():
-    return
+def _reanalysis_request(area, years, months, days):
+    return {
+        "system_version": [GLOFAS_VERSION],
+        "hydrological_model": [GLOFAS_HYDROLOGICAL_MODEL],
+        "product_type": ["consolidated"],  # Maybe sometimes intermediate?
+        "variable": ["river_discharge_in_the_last_24_hours"],
+        "area": area,
+        "hyear": [str(y) for y in years],
+        "hmonth": [str(m).zfill(2) for m in months],
+        "hday": [str(d).zfill(2) for d in days],
+        "format": "grib2",
+        "download_format": "unarchived",
+    }
 
 
-def _reforecast_request():
-    return
+def _reforecast_request(area, years, months, days, leadtimes):
+    return {
+        "system_version": [GLOFAS_VERSION],
+        "hydrological_model": [GLOFAS_HYDROLOGICAL_MODEL],
+        "product_type": ["ensemble_perturbed_forecasts"],
+        "variable": ["river_discharge_in_the_last_24_hours"],
+        "area": area,
+        "year": [str(y) for y in years],
+        "month": [str(m).zfill(2) for m in months],
+        "day": [str(d).zfill(2) for d in days],
+        "leadtime_hour": [str(lt) for lt in leadtimes],
+        "format": "grib2",
+        "download_format": "unarchived",
+    }
 
 
-def _forecast_request():
-    return
+def _forecast_request(area, years, months, days, leadtimes):
+    return {
+        "system_version": [GLOFAS_VERSION],
+        "hydrological_model": [GLOFAS_HYDROLOGICAL_MODEL],
+        "product_type": ["ensemble_perturbed_forecasts"],
+        "variable": ["river_discharge_in_the_last_24_hours"],
+        "area": area,
+        "year": [str(y) for y in years],
+        "month": [str(m).zfill(2) for m in months],
+        "day": [str(d).zfill(2) for d in days],
+        "leadtime_hour": [str(lt) for lt in leadtimes],
+        "format": "grib2",
+        "download_format": "unarchived",
+    }
 
 
 def _get_file_name(
