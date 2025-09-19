@@ -1,11 +1,11 @@
 import os
+import tempfile
 from pathlib import Path
 from typing import List, Literal, Optional, Union
 
 import cdsapi
 import pandas as pd
 import xarray as xr
-from azure.storage.blob import BlobClient
 
 GLOFAS_DATASET_NAMES = {
     "reanalysis": "cems-glofas-reanalysis",
@@ -18,16 +18,14 @@ GLOFAS_HYDROLOGICAL_MODEL = "lisflood"
 
 def download_glofas(
     dataset: Literal["reanalysis", "reforecast", "forecast"],
-    area: List[float],  # coords in list like [N, W, S, E]
-    years: List[int],  # eg. [2020, 2021, 2022]
-    months: List[int],  # eg. [1, 2, 3]
-    days: List[int],  # eg. [1, 2, 3, 4, 5]
-    leadtimes: List[
-        int
-    ],  # eg. [24, 48, 72, 96] (must be hours in day increments)
-    output_dir: Union[str, Path, BlobClient],
+    area: List[float],
+    years: List[int],
+    months: List[int],
+    days: List[int],
+    leadtimes: List[int],
+    output_dir: str,
     clobber: bool = True,
-) -> Union[Path, str]:  # Returns Path for local, blob name for Azure
+) -> Union[Path, str]:
     """
     Downloads glofas data from cds api.
     1. clobber == True, overwrite if existing file is present
@@ -62,11 +60,11 @@ def download_glofas(
 
 def load_glofas(
     dataset: Literal["reanalysis", "reforecast", "forecast"],
-    area,  # [N, W, S, E]
-    years,
-    months,
-    days,
-    leadtimes,
+    area: List[float],  # [N, W, S, E]
+    years: List[int],
+    months: List[int],
+    days: List[int],
+    leadtimes: List[int],
     output_dir: Optional[str] = None,
     use_cache: bool = False,
 ) -> xr.Dataset:
@@ -79,24 +77,44 @@ def load_glofas(
         Generate grib filename from input params. Go to 2. if the file doesn't exist.
     4. output_dir == None, use_cache == True: Invalid. Return error telling user to specify an output_dir.
     """
-    if use_cache:
-        f = _get_file_name(dataset, area, years, months, days, leadtimes)
-        dir = Path(output_dir) / f
-        return xr.open_dataset(
-            dir,
-            engine="cfgrib",
-            decode_timedelta=True,
-            backend_kwargs={"indexpath": ""},
-        )
-    else:
-        print("!")
+    if use_cache and output_dir is None:
+        raise ValueError("Must specify output_dir when use_cache=True")
 
-    return
+    f = _get_file_name(dataset, area, years, months, days, leadtimes)
+
+    if use_cache:
+        file_path = Path(output_dir) / f
+        if file_path.exists():
+            return xr.open_dataset(
+                file_path,
+                engine="cfgrib",
+                decode_timedelta=True,
+                backend_kwargs={"indexpath": ""},
+            )
+
+    if output_dir is None:
+        output_dir = tempfile.mkdtemp()
+
+    file_path = download_glofas(
+        dataset,
+        area,
+        years,
+        months,
+        days,
+        leadtimes,
+        output_dir,
+        clobber=not use_cache,
+    )
+    return xr.open_dataset(
+        file_path,
+        engine="cfgrib",
+        decode_timedelta=True,
+        backend_kwargs={"indexpath": ""},
+    )
 
 
 def get_discharge(ds: xr.Dataset) -> pd.DataFrame:
-    # TODO: Transform xarray into pandas dataframe
-    return
+    return ds.to_dataframe().reset_index()
 
 
 # ---------
