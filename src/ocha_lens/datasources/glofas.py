@@ -8,11 +8,10 @@ import pandas as pd
 import xarray as xr
 
 GLOFAS_DATASET_NAMES = {
-    "reanalysis": "cems-glofas-reanalysis",
+    "reanalysis": "cems-glofas-historical",
     "forecast": "cems-glofas-forecast",
     "reforecast": "cems-glofas-reforecast",
 }
-GLOFAS_VERSION = "version_4_0"
 GLOFAS_HYDROLOGICAL_MODEL = "lisflood"
 
 EWDSAPI_URL = os.getenv("EWDSAPI_URL")
@@ -25,8 +24,8 @@ def download_glofas(
     years: List[int],
     months: List[int],
     days: List[int],
-    leadtimes: List[int],
-    output_dir: str,
+    leadtimes: List[int] = None,
+    output_dir: str = None,
     clobber: bool = True,
 ) -> Union[Path, str]:
     """
@@ -47,7 +46,7 @@ def download_glofas(
     # Otherwise go ahead and download
     else:
         if dataset == "reanalysis":
-            request = _reanalysis_request(area, years, months, days, leadtimes)
+            request = _reanalysis_request(area, years, months, days)
         elif dataset == "reforecast":
             request = _reforecast_request(area, years, months, days, leadtimes)
         elif dataset == "forecast":
@@ -67,7 +66,7 @@ def load_glofas(
     years: List[int],
     months: List[int],
     days: List[int],
-    leadtimes: List[int],
+    leadtimes: List[int] = None,
     output_dir: Optional[str] = None,
     use_cache: bool = False,
 ) -> xr.Dataset:
@@ -120,12 +119,9 @@ def get_discharge(ds: xr.Dataset) -> pd.DataFrame:
     return ds.to_dataframe().reset_index()
 
 
-# ---------
-
-
 def _reanalysis_request(area, years, months, days):
     return {
-        "system_version": [GLOFAS_VERSION],
+        "system_version": ["version_4_0"],
         "hydrological_model": [GLOFAS_HYDROLOGICAL_MODEL],
         "product_type": ["consolidated"],  # Maybe sometimes intermediate?
         "variable": ["river_discharge_in_the_last_24_hours"],
@@ -140,9 +136,9 @@ def _reanalysis_request(area, years, months, days):
 
 def _reforecast_request(area, years, months, days, leadtimes):
     return {
-        "system_version": [GLOFAS_VERSION],
+        "system_version": ["version_4_0"],
         "hydrological_model": [GLOFAS_HYDROLOGICAL_MODEL],
-        "product_type": ["ensemble_perturbed_forecasts"],
+        "product_type": ["ensemble_perturbed_reforecast"],
         "variable": "river_discharge_in_the_last_24_hours",
         "area": area,
         "hyear": [str(y) for y in years],
@@ -156,7 +152,7 @@ def _reforecast_request(area, years, months, days, leadtimes):
 
 def _forecast_request(area, years, months, days, leadtimes):
     return {
-        "system_version": [GLOFAS_VERSION],
+        "system_version": ["operational"],
         "hydrological_model": [GLOFAS_HYDROLOGICAL_MODEL],
         "product_type": ["ensemble_perturbed_forecasts"],
         "variable": ["river_discharge_in_the_last_24_hours"],
@@ -170,6 +166,7 @@ def _forecast_request(area, years, months, days, leadtimes):
     }
 
 
+# TODO
 def _get_file_name(
     dataset: Literal["reanalysis", "reforecast", "forecast"],
     area,

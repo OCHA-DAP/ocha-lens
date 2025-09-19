@@ -7,7 +7,10 @@ alabaster==1.0.0
 annotated-types==0.7.0
     # via pydantic
 attrs==25.3.0
-    # via ecmwf-datastores-client
+    # via
+    #   cfgrib
+    #   eccodes
+    #   ecmwf-datastores-client
 babel==2.17.0
     # via sphinx
 beautifulsoup4==4.13.5
@@ -20,22 +23,42 @@ certifi==2025.8.3
     #   pyogrio
     #   pyproj
     #   requests
+cffi==2.0.0
+    # via eccodes
+cfgrib==0.9.15.0
+    # via ocha-lens (pyproject.toml)
 cfgv==3.4.0
     # via pre-commit
 cftime==1.6.4.post1
     # via netcdf4
 charset-normalizer==3.4.3
     # via requests
+click==8.3.0
+    # via cfgrib
 distlib==0.4.0
     # via virtualenv
 docutils==0.21.2
     # via
     #   myst-parser
     #   sphinx
+eccodes==2.43.0
+    # via
+    #   ocha-lens (pyproject.toml)
+    #   cfgrib
+eccodeslib==2.43.0
+    # via eccodes
+eckitlib==1.31.4
+    # via
+    #   eccodeslib
+    #   fckitlib
 ecmwf-datastores-client==0.4.0
     # via cdsapi
+fckitlib==0.14.0
+    # via eccodeslib
 filelock==3.19.1
     # via virtualenv
+findlibs==0.1.2
+    # via eccodes
 furo==2025.7.19
     # via ocha-lens (pyproject.toml)
 geopandas==1.1.1
@@ -74,7 +97,9 @@ nodeenv==1.9.1
     # via pre-commit
 numpy==2.3.3
     # via
+    #   cfgrib
     #   cftime
+    #   eccodes
     #   geopandas
     #   netcdf4
     #   pandas
@@ -102,6 +127,8 @@ pluggy==1.6.0
     # via pytest
 pre-commit==4.3.0
     # via ocha-lens (pyproject.toml)
+pycparser==2.23
+    # via cffi
 pydantic==2.11.9
     # via pandera
 pydantic-core==2.33.2
