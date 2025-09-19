@@ -15,6 +15,9 @@ GLOFAS_DATASET_NAMES = {
 GLOFAS_VERSION = "version_4_0"
 GLOFAS_HYDROLOGICAL_MODEL = "lisflood"
 
+EWDSAPI_URL = os.getenv("EWDSAPI_URL")
+EWDSAPI_KEY = os.getenv("EWDSAPI_KEY")
+
 
 def download_glofas(
     dataset: Literal["reanalysis", "reforecast", "forecast"],
@@ -50,8 +53,8 @@ def download_glofas(
         elif dataset == "forecast":
             request = _forecast_request(area, years, months, days, leadtimes)
 
-        c = cdsapi.Client()
-        response = c.retrieve(GLOFAS_DATASET_NAMES["dataset"], request)
+        c = cdsapi.Client(url=EWDSAPI_URL, key=EWDSAPI_KEY)
+        response = c.retrieve(GLOFAS_DATASET_NAMES[dataset], request)
         # TODO: Also handle if output is to Azure
         os.makedirs(output_dir, exist_ok=True)
         response.download(output_f)
@@ -140,11 +143,11 @@ def _reforecast_request(area, years, months, days, leadtimes):
         "system_version": [GLOFAS_VERSION],
         "hydrological_model": [GLOFAS_HYDROLOGICAL_MODEL],
         "product_type": ["ensemble_perturbed_forecasts"],
-        "variable": ["river_discharge_in_the_last_24_hours"],
+        "variable": "river_discharge_in_the_last_24_hours",
         "area": area,
-        "year": [str(y) for y in years],
-        "month": [str(m).zfill(2) for m in months],
-        "day": [str(d).zfill(2) for d in days],
+        "hyear": [str(y) for y in years],
+        "hmonth": [str(m).zfill(2) for m in months],
+        "hday": [str(d).zfill(2) for d in days],
         "leadtime_hour": [str(lt) for lt in leadtimes],
         "format": "grib2",
         "download_format": "unarchived",

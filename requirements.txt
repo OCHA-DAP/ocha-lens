@@ -6,11 +6,15 @@ alabaster==1.0.0
     # via sphinx
 annotated-types==0.7.0
     # via pydantic
+attrs==25.3.0
+    # via ecmwf-datastores-client
 babel==2.17.0
     # via sphinx
-beautifulsoup4==4.13.4
+beautifulsoup4==4.13.5
     # via furo
-certifi==2025.7.14
+cdsapi==0.7.6
+    # via ocha-lens (pyproject.toml)
+certifi==2025.8.3
     # via
     #   netcdf4
     #   pyogrio
@@ -20,7 +24,7 @@ cfgv==3.4.0
     # via pre-commit
 cftime==1.6.4.post1
     # via netcdf4
-charset-normalizer==3.4.2
+charset-normalizer==3.4.3
     # via requests
 distlib==0.4.0
     # via virtualenv
@@ -28,13 +32,15 @@ docutils==0.21.2
     # via
     #   myst-parser
     #   sphinx
-filelock==3.18.0
+ecmwf-datastores-client==0.4.0
+    # via cdsapi
+filelock==3.19.1
     # via virtualenv
 furo==2025.7.19
     # via ocha-lens (pyproject.toml)
 geopandas==1.1.1
     # via ocha-lens (pyproject.toml)
-identify==2.6.12
+identify==2.6.14
     # via pre-commit
 idna==3.10
     # via requests
@@ -52,10 +58,12 @@ markdown-it-py==3.0.0
     #   myst-parser
 markupsafe==3.0.2
     # via jinja2
-mdit-py-plugins==0.4.2
+mdit-py-plugins==0.5.0
     # via myst-parser
 mdurl==0.1.2
     # via markdown-it-py
+multiurl==0.3.7
+    # via ecmwf-datastores-client
 mypy-extensions==1.1.0
     # via typing-inspect
 myst-parser==4.0.1
@@ -64,7 +72,7 @@ netcdf4==1.7.2
     # via ocha-lens (pyproject.toml)
 nodeenv==1.9.1
     # via pre-commit
-numpy==2.3.1
+numpy==2.3.3
     # via
     #   cftime
     #   geopandas
@@ -81,20 +89,20 @@ packaging==25.0
     #   pytest
     #   sphinx
     #   xarray
-pandas==2.3.1
+pandas==2.3.2
     # via
     #   ocha-lens (pyproject.toml)
     #   geopandas
     #   xarray
 pandera==0.25.0
     # via ocha-lens (pyproject.toml)
-platformdirs==4.3.8
+platformdirs==4.4.0
     # via virtualenv
 pluggy==1.6.0
     # via pytest
-pre-commit==4.2.0
+pre-commit==4.3.0
     # via ocha-lens (pyproject.toml)
-pydantic==2.11.7
+pydantic==2.11.9
     # via pandera
 pydantic-core==2.33.2
     # via pydantic
@@ -104,27 +112,35 @@ pygments==2.19.2
     #   furo
     #   pytest
     #   sphinx
-pyogrio==0.11.0
+pyogrio==0.11.1
     # via geopandas
-pyproj==3.7.1
+pyproj==3.7.2
     # via geopandas
-pytest==8.4.1
+pytest==8.4.2
     # via ocha-lens (pyproject.toml)
 python-dateutil==2.9.0.post0
-    # via pandas
+    # via
+    #   multiurl
+    #   pandas
 python-dotenv==1.1.1
     # via ocha-lens (pyproject.toml)
 pytz==2025.2
-    # via pandas
+    # via
+    #   multiurl
+    #   pandas
 pyyaml==6.0.2
     # via
     #   myst-parser
     #   pre-commit
-requests==2.32.4
-    # via sphinx
+requests==2.32.5
+    # via
+    #   cdsapi
+    #   ecmwf-datastores-client
+    #   multiurl
+    #   sphinx
 roman-numerals-py==3.1.0
     # via sphinx
-ruff==0.12.4
+ruff==0.13.1
     # via ocha-lens (pyproject.toml)
 shapely==2.1.1
     # via geopandas
@@ -132,7 +148,7 @@ six==1.17.0
     # via python-dateutil
 snowballstemmer==3.0.1
     # via sphinx
-soupsieve==2.7
+soupsieve==2.8
     # via beautifulsoup4
 sphinx==8.2.3
     # via
@@ -157,11 +173,16 @@ sphinxcontrib-qthelp==2.0.0
     # via sphinx
 sphinxcontrib-serializinghtml==2.0.0
     # via sphinx
+tqdm==4.67.1
+    # via
+    #   cdsapi
+    #   multiurl
 typeguard==4.4.4
     # via pandera
-typing-extensions==4.14.1
+typing-extensions==4.15.0
     # via
     #   beautifulsoup4
+    #   ecmwf-datastores-client
     #   pandera
     #   pydantic
     #   pydantic-core
@@ -176,7 +197,7 @@ tzdata==2025.2
     # via pandas
 urllib3==2.5.0
     # via requests
-virtualenv==20.32.0
+virtualenv==20.34.0
     # via pre-commit
-xarray==2025.7.1
+xarray==2025.9.0
     # via ocha-lens (pyproject.toml)
