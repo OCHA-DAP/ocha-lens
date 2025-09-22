@@ -31,6 +31,23 @@ def _normalize_longitude(df, longitude_col="longitude"):
     return df_normalized
 
 
+def _convert_season(row):
+    """
+    Follows convention to use the subsequent year if the cyclone is in the
+    southern hemisphere and occurring after June. Relies on "south"/"South"
+    being present in the input basin.
+    """
+    season = row["valid_time"].year
+    basin = row["basin"]
+    is_southern_hemisphere = (
+        "south" in basin.lower() if isinstance(basin, str) else False
+    )
+    is_july_or_later = row["valid_time"].month >= 7
+    if is_southern_hemisphere and is_july_or_later:
+        season += 1
+    return season
+
+
 def check_crs(gdf, expected_crs="EPSG:4326"):
     """Check if GeoDataFrame has the expected CRS."""
     if gdf.crs is None:

@@ -15,6 +15,7 @@ import requests
 from dateutil import rrule
 
 from ocha_lens.utils.storm import (
+    _convert_season,
     _create_storm_id,
     _normalize_longitude,
     _to_gdf,
@@ -527,19 +528,3 @@ def _convert_basin(row):
         logger.warning(f"Unexpected input basin: {basin}")
         standard_basin = basin
     return standard_basin
-
-
-def _convert_season(row):
-    """
-    Follows convention to use the subsequent year if the cyclone is in the
-    southern hemisphere and occurring after June
-    """
-    season = row["valid_time"].year
-    basin = row["basin"]
-    is_southern_hemisphere = (
-        "south" in basin.lower() if isinstance(basin, str) else False
-    )
-    is_july_or_later = row["valid_time"].month >= 7
-    if is_southern_hemisphere and is_july_or_later:
-        season += 1
-    return season
