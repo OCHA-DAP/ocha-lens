@@ -30,7 +30,7 @@ See below for the output schemas provided by this module. These schemas are desi
 
 ### `lens.ibtracs.get_storms()`
 
-This function outputs a table that contains one row per unique storm (as identified by the SID). This data can be used to map between different storm identification systems (eg. SID to ATCF ID) and obtain storm-level metadata.
+This function outputs a table that contains one row per unique storm (as identified by the `sid`). This data can be used to map between different storm identification systems (eg. `sid`to `atcf_id`) and obtain storm-level metadata.
 
 | Field | Type | Required | Validation | Description |
 |-------|------|----------|------------|-------------|
@@ -106,6 +106,6 @@ IBTrACS is missing the best track data from RSMC La Réunion since 2022. See [th
 - [Humanitarian Data Exchange IBTrACS dataset](https://data.humdata.org/dataset/ibtracs-global-tropical-storm-tracks)
 
 [^1]: Storms in the Southern Hemisphere that begin after July 1 are classified with the following year.
-[^2]: Viable basins are NA (North Atlantic), SA (South Atlantic), EP (Eastern North Pacific), WP (Western North Pacific), SP (South Pacific), SI (South Indian), NI (North Indian).
+[^2]: Viable basins are `NA` (North Atlantic), `SA` (South Atlantic), `EP` (Eastern North Pacific), `WP` (Western North Pacific), `SP` (South Pacific), `SI` (South Indian), `NI` (North Indian).
 [^3]: IBTrACS source data has some instances of a wind speed of -1. Justification for this is still under investigation.
 [^4]: See further details from [Knapp and Kruk (2010)](https://journals.ametsoc.org/view/journals/mwre/138/4/2009mwr3123.1.xml)
