@@ -98,7 +98,9 @@ TRACK_SCHEMA = pa.DataFrameSchema(
 
 
 def download_ibtracs(
-    dataset: Literal["ALL", "ACTIVE", "last3years"] = "ALL",
+    dataset: Literal[
+        "ALL", "ACTIVE", "last3years", "EP", "NA", "NI", "SA", "SI", "SP", "WP"
+    ] = "ALL",
     save_dir: Optional[str] = "storm",
 ) -> Path:
     """
@@ -106,11 +108,18 @@ def download_ibtracs(
 
     Parameters
     ----------
-    dataset : {"ALL", "ACTIVE", "last3years"}, default "ALL"
+    dataset : {"ALL", "ACTIVE", "last3years", "EP", "NA", "NI", "SA", "SI", "SP", "WP"}, default "ALL"
         Which IBTrACS dataset to download:
         - "ALL": Complete historical record
         - "ACTIVE": Records for active storms only
         - "last3years": Records from the past three years
+        - "EP": Eastern North Pacific basin
+        - "NA": North Atlantic basin
+        - "NI": North Indian basin
+        - "SA": South Atlantic basin
+        - "SI": South Indian basin
+        - "SP": South Pacific basin
+        - "WP": Western North Pacific basin
     save_dir : str, optional
         Directory to download to.
 
@@ -137,7 +146,9 @@ def download_ibtracs(
 
 def load_ibtracs(
     file_path: Optional[str] = None,
-    dataset: Literal["ALL", "ACTIVE", "last3years"] = "ALL",
+    dataset: Literal[
+        "ALL", "ACTIVE", "last3years", "EP", "NA", "NI", "SA", "SI", "SP", "WP"
+    ] = "ALL",
 ) -> xr.Dataset:
     """
     Load IBTrACS data from NetCDF file or download to a temporary directory.
@@ -146,8 +157,19 @@ def load_ibtracs(
     ----------
     file_path : str, optional
         Path to the IBTrACS NetCDF file. If None, downloads the file to a temp directory.
-    dataset : str, default "ALL"
-        Which IBTrACS dataset to use if downloading ("ALL", "ACTIVE", or "last3years").
+    dataset : {"ALL", "ACTIVE", "last3years", "EP", "NA", "NI", "SA", "SI", "SP", "WP"}, default "ALL"
+        Which IBTrACS dataset to download:
+        - "ALL": Complete historical record
+        - "ACTIVE": Records for active storms only
+        - "last3years": Records from the past three years
+        - "EP": Eastern North Pacific basin
+        - "NA": North Atlantic basin
+        - "NI": North Indian basin
+        - "SA": South Atlantic basin
+        - "SI": South Indian basin
+        - "SP": South Pacific basin
+        - "WP": Western North Pacific basin
+
         Only used if file_path is None.
 
     Returns
