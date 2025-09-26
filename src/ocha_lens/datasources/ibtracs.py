@@ -226,7 +226,10 @@ def get_storms(ds: xr.Dataset) -> pd.DataFrame:
 
 def get_tracks(ds: xr.Dataset, track_type: str = "all") -> gpd.GeoDataFrame:
     """
-    Extract track data from IBTrACS source data.
+    Extract track data from IBTrACS source data. Users should be cautious of
+    comparing wind speed measurements from storms with different providers
+    (eg. as may be the case in provisional vs best tracks), as different
+    providers use different averaging periods.
 
     Parameters
     ----------

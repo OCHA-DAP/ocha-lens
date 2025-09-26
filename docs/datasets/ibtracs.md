@@ -79,7 +79,7 @@ See more details of the enforced schema from [this validation](https://github.co
 
 ### Incorporating additional variables from IBTrACS
 
-The raw IBTrACS data has many many more fields than are output from this API. The majority of these fields cover the same variables, but repeated across various agencies (eg. `usa_wind`, `tokyo_wind`, `bom_wind`, etc). IBTrACS outputs a sparse data structure and so the most fields are not applicable for a given storm (ie. RSCM Tokyo only reports on cyclones in the West Pacific).
+The raw IBTrACS data has many many more fields than are output from this API. The majority of these fields cover the same variables, but repeated across various agencies (eg. `usa_wind`, `tokyo_wind`, `bom_wind`, etc). IBTrACS outputs a sparse data structure and so the most fields are not applicable for a given storm (ie. RSMC Tokyo only reports on cyclones in the West Pacific).
 
 To keep analysis simple and interoperable with other cyclone track data sources, this API is relatively opinionated in which fields it preserves. While not yet directly supported, it should be relatively straightforward to merge in additional variables should your analysis require. See [this notebook](https://github.com/OCHA-DAP/ocha-lens/blob/main/examples/ibtracs.ipynb) for an example.
 
@@ -100,10 +100,12 @@ IBTrACS is missing the best track data from RSMC La Réunion since 2022. See [th
 
 - [IBTrACS Website](https://www.ncei.noaa.gov/products/international-best-track-archive)
 - [IBTrACS Technical Documentation](https://www.ncei.noaa.gov/sites/g/files/anmtlf171/files/2025-04/IBTrACS_version4r01_Technical_Details.pdf)
+- [IBTrACS Column Documentation](https://www.ncei.noaa.gov/sites/default/files/2021-07/IBTrACS_v04_column_documentation.pdf)
 - [CLIMADA package with additional IBTrACS data wrangling](https://climada-python.readthedocs.io/en/latest/user-guide/climada_hazard_TropCyclone.html)
 - [IBTrACS Q&A Forum](https://groups.google.com/g/ibtracs-qa/)
 - [Browse IBTrACS data](https://ncics.org/ibtracs/index.php)
 - [Humanitarian Data Exchange IBTrACS dataset](https://data.humdata.org/dataset/ibtracs-global-tropical-storm-tracks)
+- [WMO regional bodies per basin](https://www.ncei.noaa.gov/sites/default/files/2021-07/IBTrACS_v04_column_documentation.pdf)
 
 [^1]: Storms in the Southern Hemisphere that begin after July 1 are classified with the following year.
 [^2]: Viable basins are `NA` (North Atlantic), `SA` (South Atlantic), `EP` (Eastern North Pacific), `WP` (Western North Pacific), `SP` (South Pacific), `SI` (South Indian), `NI` (North Indian).

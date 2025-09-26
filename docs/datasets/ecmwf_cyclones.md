@@ -40,7 +40,7 @@ This function outputs a table that contains one row per unique storm (as identif
 | `season` | `int` | **Required** | 2005-2050 range | Storm season year[^1] |
 | `name` | `str` | Optional | - | Storm name, all uppercase |
 | `provider` | `str` | Optional | - | Data provider |
-| `genesis_basin` | `str` | Optional | Must match basin mapping[^2] | Basin where storm originated |
+| `genesis_basin` | `str` | Optional | Must match basin mapping[^2] | Basin where forecast originated |
 
 See more details of the enforced schema from [this validation](https://github.com/OCHA-DAP/ocha-lens/blob/358489c9af541ef1831b2889b89a5810e339993d/src/ocha_lens/datasources/ecmwf_storm.py#L37-L52) in the source code.
 
@@ -74,7 +74,7 @@ While the assigned `storm_id` can be used to group forecasts from known storms, 
 
 ### Possibility of multiple `storm_id`s for the same system in ECMWF data
 
-It is expected that systems with forecasts starting in different basins will have multiple `storm_id`s. For example, see `esther_sp_2020`/`esther_si_2020`, and `lisa_ep_2022`/`lisa_na_2022`. This happens because the genesis basin of a storm is included in its ID. Use caution in your analysis when investigating a storm that is close to a basin boundary, or when your study area is close to a basin boundary. In these cases, queries by a spatial bounding box may be more appropriate.
+It is expected that systems with forecasts starting in different basins will have multiple `storm_id`s. For example, see `esther_sp_2020`/`esther_si_2020`, and `lisa_ep_2022`/`lisa_na_2022`. This happens because the genesis basin of a forecast is included in its ID. Use caution in your analysis when investigating a storm that is close to a basin boundary, or when your study area is close to a basin boundary. In these cases, queries by a spatial bounding box may be more appropriate.
 
 ### Handling storms that cross the antimeridian
 
