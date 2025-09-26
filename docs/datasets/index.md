@@ -6,8 +6,5 @@ ocha-lens provides utilities for working with various climate-related datasets:
 :maxdepth: 1
 
 ibtracs
+ecmwf_cyclones
 ```
-
-## Coming Soon
-
-Additional climate datasets and processing utilities will be added in future releases.
