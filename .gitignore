@@ -54,3 +54,4 @@ docs/api/generated/
 
 .idea/
 data/*
+examples/data/*
