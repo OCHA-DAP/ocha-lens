@@ -27,6 +27,7 @@ def download_glofas(
     leadtimes: List[int] = None,
     output_dir: str = None,
     clobber: bool = True,
+    consolidated=True,
 ) -> Union[Path, str]:
     """
     Downloads glofas data from cds api.
@@ -46,7 +47,9 @@ def download_glofas(
     # Otherwise go ahead and download
     else:
         if dataset == "reanalysis":
-            request = _reanalysis_request(area, years, months, days)
+            request = _reanalysis_request(
+                area, years, months, days, consolidated
+            )
         elif dataset == "reforecast":
             request = _reforecast_request(area, years, months, days, leadtimes)
         elif dataset == "forecast":
@@ -69,6 +72,7 @@ def load_glofas(
     leadtimes: List[int] = None,
     output_dir: Optional[str] = None,
     use_cache: bool = False,
+    consolidated=False,
 ) -> xr.Dataset:
     """
     Loads glofas data into memory. May download from cds api or get from existing cache.
@@ -106,6 +110,7 @@ def load_glofas(
         leadtimes,
         output_dir,
         clobber=not use_cache,
+        consolidated=consolidated,
     )
     return xr.open_dataset(
         file_path,
@@ -119,11 +124,12 @@ def get_discharge(ds: xr.Dataset) -> pd.DataFrame:
     return ds.to_dataframe().reset_index()
 
 
-def _reanalysis_request(area, years, months, days):
+def _reanalysis_request(area, years, months, days, consolidated=True):
+    product_type = "consolidated" if consolidated else "intermediate"
     return {
         "system_version": ["version_4_0"],
         "hydrological_model": [GLOFAS_HYDROLOGICAL_MODEL],
-        "product_type": ["consolidated"],  # Maybe sometimes intermediate?
+        "product_type": [product_type],
         "variable": ["river_discharge_in_the_last_24_hours"],
         "area": area,
         "hyear": [str(y) for y in years],
@@ -134,7 +140,8 @@ def _reanalysis_request(area, years, months, days):
     }
 
 
-def _reforecast_request(area, years, months, days, leadtimes):
+def _reforecast_request(area, years, months, days, leadtimes=None):
+    leadtimes = [i for i in range(24, 744, 24)] if not leadtimes else leadtimes
     return {
         "system_version": ["version_4_0"],
         "hydrological_model": [GLOFAS_HYDROLOGICAL_MODEL],
@@ -150,7 +157,8 @@ def _reforecast_request(area, years, months, days, leadtimes):
     }
 
 
-def _forecast_request(area, years, months, days, leadtimes):
+def _forecast_request(area, years, months, days, leadtimes=None):
+    leadtimes = [i for i in range(24, 744, 24)] if not leadtimes else leadtimes
     return {
         "system_version": ["operational"],
         "hydrological_model": [GLOFAS_HYDROLOGICAL_MODEL],
