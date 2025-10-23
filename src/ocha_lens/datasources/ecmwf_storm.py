@@ -35,6 +35,9 @@ BASIN_MAPPING = {
     "South Pacific": "SP",
 }
 
+# Conversion factor from m/s to knots
+KTS_CONVERSION = 1.944
+
 STORM_SCHEMA = pa.DataFrameSchema(
     {
         "name": pa.Column(str, nullable=True),
@@ -471,6 +474,7 @@ def _process_cxml_to_df(
 
     df["baseTime"] = pd.to_datetime(df["baseTime"])
     df["validTime"] = pd.to_datetime(df["validTime"])
+    df["maximumWind"] = df["maximumWind"] * KTS_CONVERSION
     df.dropna(
         subset=["validTime", "latitude", "longitude"], how="any", inplace=True
     )
