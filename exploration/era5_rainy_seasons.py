@@ -17,9 +17,11 @@ def _(mo):
         r"""
     # Rainy Season Definition from ERA5 Rainfall Patterns
 
-    This is a POC analysis to identify distinct rainfall seasonality patterns across a selected country using gridded monthly precipitation data from ECMWF's ERA5 reanalysis dataset (1993-2016). For each grid cell, we compute a climatological seasonal cycle by averaging monthly rainfall across all years, then normalize these patterns to focus on the timing rather than magnitude of rainfall peaks. This normalization ensures that clustering is driven by seasonal patterns rather than absolute precipitation amounts.
+    This is a POC analysis to identify distinct rainfall seasonality patterns across a selected country using gridded monthly precipitation data from ECMWF's ERA5 reanalysis dataset (1993-2016).
 
-    We then apply k-means clustering to group grid cells with similar seasonal cycles. Use the dropdown below to define the target number of clusters.
+    ## 1. K-means clustering
+
+    For each grid cell, we compute a climatological seasonal cycle by averaging monthly rainfall across all years, then normalize these patterns to focus on the timing rather than magnitude of rainfall peaks. This normalization ensures that clustering is driven by seasonal patterns rather than absolute precipitation amounts. We then apply k-means clustering to group grid cells with similar seasonal cycles. Use the dropdown below to define the target number of clusters.
     """
     )
     return
@@ -33,13 +35,28 @@ def _():
     import ocha_stratus as stratus
     import plotly.express as px
     import plotly.graph_objects as go
+    import xarray as xr
     from dotenv import find_dotenv, load_dotenv
     from exactextract import exact_extract
+    from plotly.subplots import make_subplots
+    from scipy.fft import fft
     from sklearn.cluster import KMeans
     from sklearn.preprocessing import MinMaxScaler
 
     _ = load_dotenv(find_dotenv(usecwd=True))
-    return KMeans, MinMaxScaler, date, exact_extract, go, np, px, stratus
+    return (
+        KMeans,
+        MinMaxScaler,
+        date,
+        exact_extract,
+        fft,
+        go,
+        make_subplots,
+        np,
+        px,
+        stratus,
+        xr,
+    )
 
 
 @app.cell
@@ -124,7 +141,7 @@ def _(KMeans, MinMaxScaler, N_ZONES, da, np):
     cluster_map = np.full(clim_2d.shape[0], np.nan)
     cluster_map[valid] = labels
     cluster_map = cluster_map.reshape(len(da.y), len(da.x))
-    return clim_norm, cluster_map, kmeans, labels
+    return clim_norm, cluster_map, kmeans, labels, monthly_clim
 
 
 @app.cell
@@ -311,7 +328,7 @@ def _(ADM_LEVEL, cluster_colors, gdf_, px):
     )
 
     fig_admin.update_layout(
-        title="Clusters by Administrative Boundary",
+        title="Clusters by Administrative Boundary: K-means",
         template="simple_white",
         margin=dict(l=0, r=0, t=40, b=0),
         showlegend=False,
@@ -338,22 +355,16 @@ def _(mo):
 
 
 @app.cell
-def _(threshold):
-    THRESHOLD = threshold.value
-    return (THRESHOLD,)
-
-
-@app.cell
 def _(
     ADM_LEVEL,
     N_ZONES,
-    THRESHOLD,
     cluster_colors,
     gdf_,
     go,
     kmeans,
     months,
     np,
+    threshold,
 ):
     heatmap_values = []
     admin_names = []
@@ -363,7 +374,7 @@ def _(
 
     for _idx, _row in gdf_sorted.iterrows():
         cluster_id = int(_row["cluster"])
-        rainy_pattern = kmeans.cluster_centers_[cluster_id] > THRESHOLD
+        rainy_pattern = kmeans.cluster_centers_[cluster_id] > threshold.value
         # Use cluster_id+1 where rainy (shift clusters to 1,2,3...), 0 where not rainy
         heatmap_values.append(np.where(rainy_pattern, cluster_id + 1, 0))
         admin_names.append(_row[f"ADM{ADM_LEVEL}_PCODE"])
@@ -391,12 +402,209 @@ def _(
         height=len(admin_names) * 20,
         margin=dict(l=0, r=0, t=40, b=0),
     )
-    return (gdf_sorted,)
+
+    x = 10  # noqa
+    return fig_rainy, gdf_sorted
 
 
 @app.cell
-def _(gdf_sorted):
-    gdf_sorted
+def _(fig_rainy, mo):
+    mo.accordion({"### See plot": fig_rainy})
+    return
+
+
+@app.cell
+def _(gdf_sorted, mo):
+    mo.accordion(
+        {
+            "### Download cluster assignments per admin": gdf_sorted.drop(
+                ["geometry", "cluster_str"], axis=1
+            )
+        }
+    )
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+    ## 2. Index of seasonality
+
+    We can also identify locations with annual/biannual rainfall regimes using an index of seasonality as defined by [Dunning et al., 2016](https://agupubs.onlinelibrary.wiley.com/doi/full/10.1002/2016JD025428). This approach is appropriate for differentiating between areas with either one or two wet seasons per year.
+
+    This method works by first computing the amplitude of the first and second harmonics, per pixel. Then we calculate the ratio of the amplitude of the second harmonic to the first harmonic. If the ratio is greater than 1, then we classify the pixel as having a biannual rainfall regime. Less than 1, and the pixel is considered to have an annual regime.
+
+    Note that this method should be applied with caution in Saharan regions where low rainfalls can produce misleading harminic ratios. This method may also have a hard time distinguishing seasonality patterns in humid equatorial regions.
+    """
+    )
+    return
+
+
+@app.cell
+def _(fft, monthly_clim, np, xr):
+    fft_result = fft(monthly_clim, axis=0)
+
+    first_harmonic = 2 * np.abs(fft_result[1]) / 12
+    second_harmonic = 2 * np.abs(fft_result[2]) / 12
+
+    ratio = second_harmonic / first_harmonic
+
+    valid_mask = ~np.isnan(ratio) & (first_harmonic > 0)
+    regime = np.full_like(ratio, np.nan)
+    regime[valid_mask] = (ratio[valid_mask] > 1.0).astype(float)
+
+    coords = {"y": monthly_clim.coords["y"], "x": monthly_clim.coords["x"]}
+
+    da_ratio = xr.DataArray(ratio, coords=coords)
+    da_regime = xr.DataArray(regime, coords=coords)
+    return da_ratio, da_regime
+
+
+@app.cell
+def _(da_ratio, da_regime, go, make_subplots, np):
+    # Create subplot figure
+    _fig = make_subplots(
+        rows=1,
+        cols=2,
+        subplot_titles=("Harmonic Ratio", "Regime (0=Annual, 1=Biannual)"),
+        specs=[[{"type": "xy"}, {"type": "xy"}]],
+    )
+
+    # Calculate percentiles to handle outliers
+    ratio_values = da_ratio.values[~np.isnan(da_ratio.values)]
+    ratio_5th = np.percentile(ratio_values, 5)
+    ratio_95th = np.percentile(ratio_values, 95)
+
+    # Ensure the color range is symmetric around 1.0
+    max_deviation = max(abs(1.0 - ratio_5th), abs(ratio_95th - 1.0))
+    color_min = 1.0 - max_deviation
+    color_max = 1.0 + max_deviation
+
+    # Plot 1: Harmonic ratio
+    _fig.add_trace(
+        go.Heatmap(
+            z=da_ratio.values,
+            x=da_ratio.x.values,
+            y=da_ratio.y.values,
+            colorscale="RdBu_r",
+            zmin=color_min,
+            zmax=color_max,
+            name="Ratio",
+            showscale=True,
+            colorbar=dict(x=0.45),
+        ),
+        row=1,
+        col=1,
+    )
+
+    # Add contour for ratio=1.0 threshold
+    _fig.add_trace(
+        go.Contour(
+            z=da_ratio.values,
+            x=da_ratio.x.values,
+            y=da_ratio.y.values,
+            contours_coloring="lines",
+            contours=dict(start=1.0, end=1.0, size=0.1),
+            line=dict(color="red", width=3),
+            showscale=False,
+            name="Threshold",
+        ),
+        row=1,
+        col=1,
+    )
+
+    # Plot 2: Regime classification
+    _fig.add_trace(
+        go.Heatmap(
+            z=da_regime.values,
+            x=da_regime.x.values,
+            y=da_regime.y.values,
+            colorscale="RdYlGn",
+            zmin=0,
+            zmax=1,
+            name="Regime",
+            showscale=True,
+            colorbar=dict(x=1.02),
+        ),
+        row=1,
+        col=2,
+    )
+
+    # Update layout
+    _fig.update_layout(
+        title="Ethiopian Rainfall Regime Classification",
+        width=800,
+        height=400,
+        template="simple_white",
+    )
+
+    _fig.update_xaxes(visible=False)
+    _fig.update_yaxes(visible=False)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""Now summarize per admin region, as we did above.""")
+    return
+
+
+@app.cell
+def _(ADM_LEVEL, cluster_colors, da_regime, exact_extract, gdf, gdf_, px):
+    # Get the cluster with the majority of pixels in each polygon
+    gdf_harmonic = exact_extract(
+        da_regime,
+        gdf,
+        "majority",
+        include_cols=[f"ADM{ADM_LEVEL}_EN", f"ADM{ADM_LEVEL}_PCODE"],
+        output="pandas",
+        include_geom=True,
+    )
+    gdf_harmonic = gdf_harmonic.rename(columns={"majority": "cluster"})
+
+    # Convert cluster to string for discrete color mapping
+    gdf_harmonic["cluster"] = gdf_harmonic["cluster"].astype("Int64")
+    gdf_harmonic["cluster_str"] = gdf_harmonic["cluster"].astype(str)
+    gdf_harmonic["geometry"] = gdf_harmonic["geometry"].simplify(
+        tolerance=0.01
+    )
+
+    # Create choropleth map
+    _fig_admin = px.choropleth_map(
+        gdf_harmonic,
+        geojson=gdf_.geometry,
+        locations=gdf_harmonic.index,
+        color="cluster_str",
+        color_discrete_map={str(k): v for k, v in cluster_colors.items()},
+        hover_data=[f"ADM{ADM_LEVEL}_PCODE"],
+        labels={"cluster_str": "Cluster"},
+        center={
+            "lat": gdf_harmonic.geometry.centroid.y.mean(),
+            "lon": gdf_harmonic.geometry.centroid.x.mean(),
+        },
+        zoom=4.5,
+    )
+
+    _fig_admin.update_layout(
+        title="Clusters by Administrative Boundary: Harmonic Analysis",
+        template="simple_white",
+        margin=dict(l=0, r=0, t=40, b=0),
+        showlegend=False,
+        height=400,
+    )
+    return (gdf_harmonic,)
+
+
+@app.cell
+def _(gdf_harmonic, mo):
+    mo.accordion(
+        {
+            "### Download cluster assignments per admin": gdf_harmonic.drop(
+                ["geometry", "cluster_str"], axis=1
+            )
+        }
+    )
     return
 
 
