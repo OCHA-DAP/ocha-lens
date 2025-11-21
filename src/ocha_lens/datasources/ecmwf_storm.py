@@ -98,7 +98,7 @@ TRACK_SCHEMA = pa.DataFrameSchema(
 CXML2CSV_XSL = Path(__file__).parent / "data/cxml_ecmwf_transformation.xsl"
 
 
-def download_hindcasts(
+def download_forecasts(
     date: datetime,
     save_dir: str = "storm",
     use_cache: bool = False,
@@ -192,7 +192,7 @@ def download_hindcasts(
     return download_path
 
 
-def load_hindcasts(
+def load_forecasts(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     temp_dir: str = "storm",
@@ -247,7 +247,7 @@ def load_hindcasts(
     dfs = []
     for date in date_list:
         logger.info(f"Processing for {date}...")
-        raw_file = download_hindcasts(
+        raw_file = download_forecasts(
             date, save_dir, use_cache, skip_if_missing, stage
         )
         if raw_file:
