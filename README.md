@@ -10,3 +10,4 @@ This branch contains exploratory work that is not yet integrated into the packag
 
 - [Rainy Season Definition from ERA5 Rainfall Patterns](https://ocha-dap.github.io/ocha-lens/exploration/__marimo__/era5_rainy_seasons.html)
 - [Computing Tercile Probabilities from ECMWF SEAS5 forecasts](https://ocha-dap.github.io/ocha-lens/exploration/__marimo__/climatology.html)
+- [Calculating flood exposed populations from Floodscan and WorldPop](https://ocha-dap.github.io/ocha-lens/exploration/__marimo__/flood_exposure.html)
