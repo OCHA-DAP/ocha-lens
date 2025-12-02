@@ -100,7 +100,7 @@ CXML2CSV_XSL = Path(__file__).parent / "data/cxml_ecmwf_transformation.xsl"
 
 def download_forecasts(
     date: datetime,
-    save_dir: str = "storm",
+    cache_dir: str = "storm",
     use_cache: bool = False,
     skip_if_missing: bool = False,
     stage: Literal["dev", "prod", "local"] = "local",
@@ -116,11 +116,14 @@ def download_forecasts(
     ----------
     date : datetime
         The datetime for which to download forecast data
-    save_dir : str, default "storm"
-        Directory or container name where files will be saved
+    cache_dir : str, default "storm"
+        Directory or container name to store raw cxml files. Refers to
+        a container name if stage is "dev" or "prod". Assumed to be a single
+        string rather than a full path. (#TODO: consider allowing full paths?).
+        If writing to Azure, the container must already exist.
     use_cache : bool, default False
         Whether to check for existing files before downloading
-    skip_if_missing : bool, default True
+    skip_if_missing : bool, default False
         If True, skip download if file doesn't exist on server rather than downloading
     stage : {"dev", "prod", "local"}, default "local"
         Where to save the downloaded data:
@@ -137,7 +140,7 @@ def download_forecasts(
     filename = _get_raw_filename(date)
     base_filename = os.path.basename(filename)
     base_download_path = f"xml/raw/{os.path.basename(base_filename)}"
-    download_path = Path(save_dir) / base_download_path
+    download_path = Path(cache_dir) / base_download_path
 
     # Don't download if exists already
     if use_cache:
@@ -148,7 +151,7 @@ def download_forecasts(
                 return download_path
         elif stage == "dev" or stage == "prod":
             if (
-                stratus.get_container_client(save_dir, stage=stage)
+                stratus.get_container_client(cache_dir, stage=stage)
                 .get_blob_client(base_download_path)
                 .exists()
             ):
@@ -183,7 +186,7 @@ def download_forecasts(
         stratus.upload_blob_data(
             req.content,
             base_download_path,
-            container_name=save_dir,
+            container_name=cache_dir,
             stage=stage,
         )
     else:
@@ -195,10 +198,10 @@ def download_forecasts(
 def load_forecasts(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
-    temp_dir: str = "storm",
+    cache_dir: str = "storm",
     use_cache: bool = True,
     skip_if_missing: bool = False,
-    stage: Literal["dev", "prod", "local"] = "dev",
+    stage: Literal["dev", "prod", "local"] = "local",
 ) -> Optional[pd.DataFrame]:
     """
     Load ECMWF tropical cyclone hindcast data for a date range.
@@ -207,20 +210,29 @@ def load_forecasts(
     date range. Data is downloaded at 12-hour intervals and processed into
     a standardized format.
 
+    Default behaviour is to locally save downloaded files to "storm/" directory,
+    and load from there if they already exist. Optionally, data can be saved to
+    or loaded from Azure blob storage containers by setting the stage parameter.
+
     Parameters
     ----------
     start_date : datetime, optional
         Start date for data retrieval. If None, defaults to yesterday
     end_date : datetime, optional
         End date for data retrieval. If None, defaults to yesterday
-    temp_dir : str, default "storm"
-        Directory or container name for temporary file storage
+    cache_dir : str, default "storm"
+        Directory or container name to store raw cxml files. Refers to
+        a container name if stage is "dev" or "prod". Assumed to be a single
+        string rather than a full path. (#TODO: consider allowing full paths?)
+        If writing to Azure, the container must already exist.
     use_cache : bool, default True
         Whether to use cached files if they exist
     skip_if_missing : bool, default False
-        Whether to skip dates where files are missing on the server
-    stage : {"dev", "prod", "local"}, default "dev"
-        Storage location for downloaded files
+        Whether to skip dates where files are missing on the server. Set to True if
+        you're pulling from what you know is a full cache.
+    stage : {"dev", "prod", "local"}, default "local"
+        Storage location for downloaded files. "dev" or "prod" refer to
+        internal Azure blob storage containers.
 
     Returns
     -------
@@ -234,9 +246,6 @@ def load_forecasts(
     if end_date is None:
         end_date = (datetime.now() - timedelta(days=1)).date()
 
-    save_dir = Path(temp_dir) if temp_dir else Path("temp")
-    os.makedirs(save_dir, exist_ok=True)
-
     date_list = rrule.rrule(
         rrule.HOURLY,
         dtstart=start_date,
@@ -248,10 +257,10 @@ def load_forecasts(
     for date in date_list:
         logger.info(f"Processing for {date}...")
         raw_file = download_forecasts(
-            date, save_dir, use_cache, skip_if_missing, stage
+            date, cache_dir, use_cache, skip_if_missing, stage
         )
         if raw_file:
-            df = _process_cxml_to_df(raw_file, stage, save_dir)
+            df = _process_cxml_to_df(raw_file, stage, cache_dir)
             if df is not None:
                 dfs.append(df)
     if len(dfs) > 0:
@@ -437,6 +446,7 @@ def _process_cxml_to_df(
     -----
     Removes ensemble forecasts, keeping only deterministic forecasts.
     """
+    print("******* PROCCESS CXML TO DF ********")
     if xsl_path is None:
         xsl_path = CXML2CSV_XSL
     xsl = et.parse(str(xsl_path))
@@ -448,6 +458,8 @@ def _process_cxml_to_df(
         elif stage == "dev" or stage == "prod":
             # Remove the first directory level since this is the container
             cxml_path = str(Path(*Path(cxml_path).parts[1:]))
+            print(cxml_path)
+            print(save_dir)
             cxml_data = stratus.load_blob_data(
                 cxml_path, container_name=save_dir
             )
