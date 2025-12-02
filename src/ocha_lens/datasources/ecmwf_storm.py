@@ -260,7 +260,7 @@ def load_forecasts(
             date, cache_dir, use_cache, skip_if_missing, stage
         )
         if raw_file:
-            df = _process_cxml_to_df(raw_file, stage, cache_dir)
+            df = _process_cxml_to_df(raw_file, stage)
             if df is not None:
                 dfs.append(df)
     if len(dfs) > 0:
@@ -418,7 +418,6 @@ def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
 def _process_cxml_to_df(
     cxml_path: Union[str, Path],
     stage: Literal["dev", "prod", "local"],
-    save_dir: Union[str, Path],
     xsl_path: Optional[Union[str, Path]] = None,
 ) -> Optional[pd.DataFrame]:
     """
@@ -432,8 +431,6 @@ def _process_cxml_to_df(
         Path to the CXML file to process
     stage : {"dev", "prod", "local"}
         Source location of the file
-    save_dir : str or Path
-        Directory or container where the file is stored
     xsl_path : str or Path, optional
         Path to XSL transformation file. If None, uses default transformation
 
@@ -446,7 +443,6 @@ def _process_cxml_to_df(
     -----
     Removes ensemble forecasts, keeping only deterministic forecasts.
     """
-    print("******* PROCCESS CXML TO DF ********")
     if xsl_path is None:
         xsl_path = CXML2CSV_XSL
     xsl = et.parse(str(xsl_path))
@@ -457,12 +453,8 @@ def _process_cxml_to_df(
             xml = et.parse(str(cxml_path))
         elif stage == "dev" or stage == "prod":
             # Remove the first directory level since this is the container
-            cxml_path = str(Path(*Path(cxml_path).parts[1:]))
-            print(cxml_path)
-            print(save_dir)
-            cxml_data = stratus.load_blob_data(
-                cxml_path, container_name=save_dir
-            )
+            container, path = str(cxml_path).split("/", 1)
+            cxml_data = stratus.load_blob_data(path, container_name=container)
             xml = et.parse(io.BytesIO(cxml_data))
         else:
             logger.error(f"Invalid stage: {stage}")
