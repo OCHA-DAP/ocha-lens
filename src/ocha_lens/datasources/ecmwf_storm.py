@@ -391,20 +391,19 @@ def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
 
     # Merge in the storm_ids
     df_forecasts = get_forecasts(df_)
+    df_["basin"] = df_.apply(_convert_basin, axis=1)
     df_tracks = df_.merge(
         df_forecasts[["id", "number", "storm_id", "genesis_basin"]],
-        left_on=["id", "number"],
-        right_on=["id", "number"],
+        left_on=["id", "number", "basin"],
+        right_on=["id", "number", "genesis_basin"],
         how="left",
     )
     assert len(df_tracks) == len(df_)
 
     # Basic column transformation
     # Keep the genesis_basin since the basin info is at the forecast level
-    df_tracks = df_tracks.drop(columns=["name", "basin"])
-    df_tracks = df_tracks.rename(
-        columns={"id": "forecast_id", "genesis_basin": "basin"}
-    )
+    df_tracks = df_tracks.drop(columns=["name", "genesis_basin"])
+    df_tracks = df_tracks.rename(columns={"id": "forecast_id"})
     df_tracks["point_id"] = [str(uuid.uuid4()) for _ in range(len(df_tracks))]
 
     # Make sure time is all in a consistent format
