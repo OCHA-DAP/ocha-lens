@@ -295,7 +295,6 @@ def get_forecasts(df: pd.DataFrame) -> pd.DataFrame:
     df_ = df.copy()
     df_["name"] = df_["name"].str.upper()
     df_["season"] = df_.apply(_convert_season, axis=1)
-    df_["basin"] = df_.apply(_convert_basin, axis=1)
 
     # Make sure time is all in a consistent format
     # in 2022 ECMWF switched from timezone-aware to not
@@ -303,19 +302,27 @@ def get_forecasts(df: pd.DataFrame) -> pd.DataFrame:
         df_["issued_time"].astype(str), utc=True, format="mixed"
     )
 
-    # Note that we're not grouping by basin since it is not necessarily
-    # constant across a single storm. We're also not grouping by just id,
+    # We're not grouping by just id,
     # since some forecast id's aren't unique
     df_sorted = df_.sort_values(["issued_time", "id"])
     df_forecasts = (
-        df_sorted.groupby(["id", "number"])[
-            ["provider", "season", "basin", "name", "issued_time"]
+        df_sorted.groupby(["id", "number", "basin"])[
+            [
+                "provider",
+                "season",
+                "name",
+                "issued_time",
+                "latitude",
+                "longitude",
+            ]
         ]
         .first()
         .reset_index()
     )
-
-    df_forecasts = df_forecasts.rename(columns={"basin": "genesis_basin"})
+    df_forecasts["genesis_basin"] = df_forecasts.apply(_convert_basin, axis=1)
+    df_forecasts = df_forecasts.drop(
+        columns=["basin", "latitude", "longitude"]
+    )
     df_forecasts.loc[:, "storm_id"] = df_forecasts.apply(
         _create_storm_id, axis=1
     )
@@ -373,7 +380,7 @@ def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
     # Merge in the storm_ids
     df_forecasts = get_forecasts(df_)
     df_tracks = df_.merge(
-        df_forecasts[["id", "number", "storm_id"]],
+        df_forecasts[["id", "number", "storm_id", "genesis_basin"]],
         left_on=["id", "number"],
         right_on=["id", "number"],
         how="left",
@@ -381,8 +388,11 @@ def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
     assert len(df_tracks) == len(df_)
 
     # Basic column transformation
-    df_tracks = df_tracks.drop(columns=["name"])
-    df_tracks = df_tracks.rename(columns={"id": "forecast_id"})
+    # Keep the genesis_basin since the basin info is at the forecast level
+    df_tracks = df_tracks.drop(columns=["name", "basin"])
+    df_tracks = df_tracks.rename(
+        columns={"id": "forecast_id", "genesis_basin": "basin"}
+    )
     df_tracks["point_id"] = [str(uuid.uuid4()) for _ in range(len(df_tracks))]
 
     # Make sure time is all in a consistent format
