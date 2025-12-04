@@ -21,6 +21,7 @@ from ocha_lens.utils.storm import (
     _to_gdf,
     check_coordinate_bounds,
     check_crs,
+    check_unique_when_storm_id_not_null,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,11 @@ TRACK_SCHEMA = pa.DataFrameSchema(
         pa.Check(
             lambda gdf: check_coordinate_bounds(gdf),
             error="All coordinates must be within valid lat/lon bounds",
+        ),
+        pa.Check(
+            check_unique_when_storm_id_not_null,
+            raise_warning=True,
+            error="Duplicate combination of storm_id, valid_time, leadtime found (excluding null storm_ids)",
         ),
     ],
 )
