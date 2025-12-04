@@ -21,7 +21,6 @@ from ocha_lens.utils.storm import (
     _to_gdf,
     check_coordinate_bounds,
     check_crs,
-    check_unique_when_storm_id_not_null,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,6 +59,7 @@ TRACK_SCHEMA = pa.DataFrameSchema(
         "issued_time": pa.Column(pd.Timestamp),
         "provider": pa.Column(str, nullable=False),
         "forecast_id": pa.Column(str, nullable=False),
+        "number": pa.Column(str, nullable=False),
         "basin": pa.Column(
             str, pa.Check.isin(list(BASIN_MAPPING.values())), nullable=False
         ),
@@ -85,11 +85,6 @@ TRACK_SCHEMA = pa.DataFrameSchema(
         pa.Check(
             lambda gdf: check_coordinate_bounds(gdf),
             error="All coordinates must be within valid lat/lon bounds",
-        ),
-        pa.Check(
-            check_unique_when_storm_id_not_null,
-            raise_warning=True,
-            error="Duplicate combination of storm_id, valid_time, leadtime found (excluding null storm_ids)",
         ),
     ],
 )
@@ -380,8 +375,7 @@ def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
     assert len(df_tracks) == len(df_)
 
     # Basic column transformation
-    df_tracks["basin"] = df_tracks.apply(_convert_basin, axis=1)
-    df_tracks = df_tracks.drop(columns=["name", "number"])
+    df_tracks = df_tracks.drop(columns=["name"])
     df_tracks = df_tracks.rename(columns={"id": "forecast_id"})
     df_tracks["point_id"] = [str(uuid.uuid4()) for _ in range(len(df_tracks))]
 
@@ -482,7 +476,7 @@ def _process_cxml_to_df(
     df.dropna(
         subset=["validTime", "latitude", "longitude"], how="any", inplace=True
     )
-    # Remove all ensemble forecasts
+    # Remove all ensemble forecasts and "analysis"
     df = df[df.type == "forecast"]
 
     # TODO: Confirm that lastClosedIsobar and maximumWindRadius are always null
