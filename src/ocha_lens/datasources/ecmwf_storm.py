@@ -78,6 +78,18 @@ TRACK_SCHEMA = pa.DataFrameSchema(
     },
     strict=True,
     coerce=True,
+    unique=[
+        "forecast_id",
+        "valid_time",
+        "leadtime",
+        "issued_time",
+        "number",
+        "basin",
+        "pressure",
+        "wind_speed",
+        "storm_id",
+        "geometry",
+    ],
     checks=[
         pa.Check(
             lambda gdf: check_crs(gdf, "EPSG:4326"),
