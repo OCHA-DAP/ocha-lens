@@ -36,7 +36,7 @@ This function outputs a table that contains one row per unique storm (as identif
 | Field | Type | Required | Validation | Description |
 |-------|------|----------|------------|-------------|
 | `storm_id` | `str` | **Required** | Must be unique | Concatenation of `<name>_<basin>_<season>` |
-| `number` | `str` | Optional | - | Storm number identifier |
+| `number` | `str` | **Required** | - | Storm number identifier |
 | `season` | `int` | **Required** | 2005-2050 range | Storm season year[^1] |
 | `name` | `str` | Optional | - | Storm name, all uppercase |
 | `provider` | `str` | Optional | - | Data provider |
@@ -53,13 +53,14 @@ This function outputs cleaned tracks for all forecasts in the raw input data. No
 | `storm_id` | `str` | Optional | - | Links to storm metadata |
 | `point_id` | `str` | **Required** | - | Unique identifier for this track point |
 | `forecast_id` | `str` | **Required** | - | Forecast ID from ECMWF |
+| `number` | `str` | **Required** | - | Storm number identifier |
 | `issued_time` | `pd.Timestamp` | **Required** | - | When the forecast was issued |
 | `valid_time` | `pd.Timestamp` | **Required** | - | Time this track point is valid for |
 | `provider` | `str` | **Required** | - | Forecast provider |
-| `basin` | `str` | **Required** | Must match basin mapping[^2] | Current basin location |
+| `basin` | `str` | **Required** | Must match basin mapping[^2] | Basin where forecast originated[^3] |
 | `leadtime` | `Int64` | **Required** | ≥ 0 | Hours ahead of forecast issue time |
 | `pressure` | `float` | Optional | 800-1100 hPa range | Central pressure |
-| `wind_speed` | `float` | Optional | 0-300 knots range | Maximum sustained winds |
+| `wind_speed` | `float` | Optional | 0-300 knots range | Maximum sustained winds[^4] |
 | `geometry` | `gpd.array.GeometryDtype` | **Required** | EPSG:4326, valid lat/lon | Geographic location |
 
 See more details of the enforced schema from [this validation](https://github.com/OCHA-DAP/ocha-lens/blob/358489c9af541ef1831b2889b89a5810e339993d/src/ocha_lens/datasources/ecmwf_storm.py#L54-L91) in the source code.
@@ -68,9 +69,13 @@ See more details of the enforced schema from [this validation](https://github.co
 
 ### Cyclone identification
 
-It can be challenging to identify unique storms from this dataset of historical forecasts. Not all forecasts correspond to a known storm, and forecasts issued from before a storm was given a name may be challenging to group with forecasts that _can_ be identified by the storm's name. Moreover, ECMWF's assigned `forecast_id` may not necessarily be unique across all storms or systems.
+It can be challenging to identify unique storms from this dataset of historical forecasts. Not all forecasts correspond to a known storm, and forecasts issued from before a storm was given a name may be challenging to group with forecasts that _can_ be identified by the storm's name. Moreover, ECMWF's assigned `forecast_id` may not necessarily be unique across all storms or systems (see below).
 
 While the assigned `storm_id` can be used to group forecasts from known storms, users should query for forecasts based on spatio/temporal bounding boxes to be sure of retrieving all forecasts for a given weather system.
+
+### Non-unique `forecast_id`s
+
+The `forecast_id` field may not necessarily be unique to a given forecasted system. ECMWF followings the `{initialization_time}_{latitude}_{longitude}` convention for creating these IDs. We have observed some IDs with the `00N_00E` (eg. `'2020011512_00N_00E'`), which appear to capture marginal systems around the world. IDs with non-zero coordinate suffixes appear to more reliably be unique to a given system.
 
 ### Possibility of multiple `storm_id`s for the same system in ECMWF data
 
@@ -94,3 +99,5 @@ Historical ECMWF tracks may have duplicate records for the same issued date. The
 
 [^1]: Storms in the Southern Hemisphere that begin after July 1 are classified with the following year.
 [^2]: Viable basins are `NA` (North Atlantic), `EP` (Northeast Pacific), `WP` (Northwest Pacific), `SP` (South Pacific), `SI` (South Indian), `NI` (North Indian). Note that ECMWF's source data combines SI and SP basins into "Southwest Pacific". We split these tracks into `SI` and `SP` across the 135 degree longitude line. See [here](https://github.com/OCHA-DAP/ocha-lens/blob/358489c9af541ef1831b2889b89a5810e339993d/src/ocha_lens/datasources/ecmwf_storm.py#L516-L529) for specifics.
+[^3]: Note that this is slightly different from the IBTrACS definition of this variable. ECMWF only reports on basin assignment at the level of each forecast, rather than for each point.
+[^4]: The location of maximum `wind_speed` does not correspond exactly to the center of the storm (which is the location reported by the `geometry` field). A storm's maximum speed is experienced in the [eyewall](https://www.noaa.gov/jetstream/tropical/tropical-cyclone-introduction/tropical-cyclone-structure), which is offset from the eye. The modelled coordinates for this point are contained in the raw `cxml` data, however have been excluded for simplicity.

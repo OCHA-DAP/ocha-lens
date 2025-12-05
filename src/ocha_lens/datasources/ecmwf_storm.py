@@ -41,7 +41,7 @@ KTS_CONVERSION = 1.944
 STORM_SCHEMA = pa.DataFrameSchema(
     {
         "name": pa.Column(str, nullable=True),
-        "number": pa.Column(str, nullable=True),
+        "number": pa.Column(str, nullable=False),
         "storm_id": pa.Column(str, nullable=False),
         "provider": pa.Column(str, nullable=True),
         "season": pa.Column(int, pa.Check.between(2005, 2050)),
