@@ -55,3 +55,4 @@ docs/api/generated/
 .idea/
 data/*
 */storm/*
+__marimo__

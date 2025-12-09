@@ -41,7 +41,7 @@ KTS_CONVERSION = 1.944
 STORM_SCHEMA = pa.DataFrameSchema(
     {
         "name": pa.Column(str, nullable=True),
-        "number": pa.Column(str, nullable=True),
+        "number": pa.Column(str, nullable=False),
         "storm_id": pa.Column(str, nullable=False),
         "provider": pa.Column(str, nullable=True),
         "season": pa.Column(int, pa.Check.between(2005, 2050)),
@@ -60,6 +60,7 @@ TRACK_SCHEMA = pa.DataFrameSchema(
         "issued_time": pa.Column(pd.Timestamp),
         "provider": pa.Column(str, nullable=False),
         "forecast_id": pa.Column(str, nullable=False),
+        "number": pa.Column(str, nullable=False),
         "basin": pa.Column(
             str, pa.Check.isin(list(BASIN_MAPPING.values())), nullable=False
         ),
@@ -77,6 +78,18 @@ TRACK_SCHEMA = pa.DataFrameSchema(
     },
     strict=True,
     coerce=True,
+    unique=[
+        "forecast_id",
+        "valid_time",
+        "leadtime",
+        "issued_time",
+        "number",
+        "basin",
+        "pressure",
+        "wind_speed",
+        "storm_id",
+        "geometry",
+    ],
     checks=[
         pa.Check(
             lambda gdf: check_crs(gdf, "EPSG:4326"),
@@ -98,9 +111,9 @@ TRACK_SCHEMA = pa.DataFrameSchema(
 CXML2CSV_XSL = Path(__file__).parent / "data/cxml_ecmwf_transformation.xsl"
 
 
-def download_hindcasts(
+def download_forecasts(
     date: datetime,
-    save_dir: str = "storm",
+    cache_dir: str = "storm",
     use_cache: bool = False,
     skip_if_missing: bool = False,
     stage: Literal["dev", "prod", "local"] = "local",
@@ -116,11 +129,14 @@ def download_hindcasts(
     ----------
     date : datetime
         The datetime for which to download forecast data
-    save_dir : str, default "storm"
-        Directory or container name where files will be saved
+    cache_dir : str, default "storm"
+        Directory or container name to store raw cxml files. Refers to
+        a container name if stage is "dev" or "prod". Assumed to be a single
+        string rather than a full path. (#TODO: consider allowing full paths?).
+        If writing to Azure, the container must already exist.
     use_cache : bool, default False
         Whether to check for existing files before downloading
-    skip_if_missing : bool, default True
+    skip_if_missing : bool, default False
         If True, skip download if file doesn't exist on server rather than downloading
     stage : {"dev", "prod", "local"}, default "local"
         Where to save the downloaded data:
@@ -137,7 +153,7 @@ def download_hindcasts(
     filename = _get_raw_filename(date)
     base_filename = os.path.basename(filename)
     base_download_path = f"xml/raw/{os.path.basename(base_filename)}"
-    download_path = Path(save_dir) / base_download_path
+    download_path = Path(cache_dir) / base_download_path
 
     # Don't download if exists already
     if use_cache:
@@ -148,7 +164,7 @@ def download_hindcasts(
                 return download_path
         elif stage == "dev" or stage == "prod":
             if (
-                stratus.get_container_client(save_dir, stage=stage)
+                stratus.get_container_client(cache_dir, stage=stage)
                 .get_blob_client(base_download_path)
                 .exists()
             ):
@@ -183,7 +199,7 @@ def download_hindcasts(
         stratus.upload_blob_data(
             req.content,
             base_download_path,
-            container_name=save_dir,
+            container_name=cache_dir,
             stage=stage,
         )
     else:
@@ -192,13 +208,13 @@ def download_hindcasts(
     return download_path
 
 
-def load_hindcasts(
+def load_forecasts(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
-    temp_dir: str = "storm",
+    cache_dir: str = "storm",
     use_cache: bool = True,
     skip_if_missing: bool = False,
-    stage: Literal["dev", "prod", "local"] = "dev",
+    stage: Literal["dev", "prod", "local"] = "local",
 ) -> Optional[pd.DataFrame]:
     """
     Load ECMWF tropical cyclone hindcast data for a date range.
@@ -207,20 +223,29 @@ def load_hindcasts(
     date range. Data is downloaded at 12-hour intervals and processed into
     a standardized format.
 
+    Default behaviour is to locally save downloaded files to "storm/" directory,
+    and load from there if they already exist. Optionally, data can be saved to
+    or loaded from Azure blob storage containers by setting the stage parameter.
+
     Parameters
     ----------
     start_date : datetime, optional
         Start date for data retrieval. If None, defaults to yesterday
     end_date : datetime, optional
         End date for data retrieval. If None, defaults to yesterday
-    temp_dir : str, default "storm"
-        Directory or container name for temporary file storage
+    cache_dir : str, default "storm"
+        Directory or container name to store raw cxml files. Refers to
+        a container name if stage is "dev" or "prod". Assumed to be a single
+        string rather than a full path. (#TODO: consider allowing full paths?)
+        If writing to Azure, the container must already exist.
     use_cache : bool, default True
         Whether to use cached files if they exist
     skip_if_missing : bool, default False
-        Whether to skip dates where files are missing on the server
-    stage : {"dev", "prod", "local"}, default "dev"
-        Storage location for downloaded files
+        Whether to skip dates where files are missing on the server. Set to True if
+        you're pulling from what you know is a full cache.
+    stage : {"dev", "prod", "local"}, default "local"
+        Storage location for downloaded files. "dev" or "prod" refer to
+        internal Azure blob storage containers.
 
     Returns
     -------
@@ -234,9 +259,6 @@ def load_hindcasts(
     if end_date is None:
         end_date = (datetime.now() - timedelta(days=1)).date()
 
-    save_dir = Path(temp_dir) if temp_dir else Path("temp")
-    os.makedirs(save_dir, exist_ok=True)
-
     date_list = rrule.rrule(
         rrule.HOURLY,
         dtstart=start_date,
@@ -247,11 +269,11 @@ def load_hindcasts(
     dfs = []
     for date in date_list:
         logger.info(f"Processing for {date}...")
-        raw_file = download_hindcasts(
-            date, save_dir, use_cache, skip_if_missing, stage
+        raw_file = download_forecasts(
+            date, cache_dir, use_cache, skip_if_missing, stage
         )
         if raw_file:
-            df = _process_cxml_to_df(raw_file, stage, save_dir)
+            df = _process_cxml_to_df(raw_file, stage)
             if df is not None:
                 dfs.append(df)
     if len(dfs) > 0:
@@ -285,7 +307,6 @@ def get_forecasts(df: pd.DataFrame) -> pd.DataFrame:
     df_ = df.copy()
     df_["name"] = df_["name"].str.upper()
     df_["season"] = df_.apply(_convert_season, axis=1)
-    df_["basin"] = df_.apply(_convert_basin, axis=1)
 
     # Make sure time is all in a consistent format
     # in 2022 ECMWF switched from timezone-aware to not
@@ -293,19 +314,27 @@ def get_forecasts(df: pd.DataFrame) -> pd.DataFrame:
         df_["issued_time"].astype(str), utc=True, format="mixed"
     )
 
-    # Note that we're not grouping by basin since it is not necessarily
-    # constant across a single storm. We're also not grouping by just id,
+    # We're not grouping by just id,
     # since some forecast id's aren't unique
     df_sorted = df_.sort_values(["issued_time", "id"])
     df_forecasts = (
-        df_sorted.groupby(["id", "number"])[
-            ["provider", "season", "basin", "name", "issued_time"]
+        df_sorted.groupby(["id", "number", "basin"])[
+            [
+                "provider",
+                "season",
+                "name",
+                "issued_time",
+                "latitude",
+                "longitude",
+            ]
         ]
         .first()
         .reset_index()
     )
-
-    df_forecasts = df_forecasts.rename(columns={"basin": "genesis_basin"})
+    df_forecasts["genesis_basin"] = df_forecasts.apply(_convert_basin, axis=1)
+    df_forecasts = df_forecasts.drop(
+        columns=["basin", "latitude", "longitude"]
+    )
     df_forecasts.loc[:, "storm_id"] = df_forecasts.apply(
         _create_storm_id, axis=1
     )
@@ -362,17 +391,18 @@ def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
 
     # Merge in the storm_ids
     df_forecasts = get_forecasts(df_)
+    df_["basin"] = df_.apply(_convert_basin, axis=1)
     df_tracks = df_.merge(
-        df_forecasts[["id", "number", "storm_id"]],
-        left_on=["id", "number"],
-        right_on=["id", "number"],
+        df_forecasts[["id", "number", "storm_id", "genesis_basin"]],
+        left_on=["id", "number", "basin"],
+        right_on=["id", "number", "genesis_basin"],
         how="left",
     )
     assert len(df_tracks) == len(df_)
 
     # Basic column transformation
-    df_tracks["basin"] = df_tracks.apply(_convert_basin, axis=1)
-    df_tracks = df_tracks.drop(columns=["name", "number"])
+    # Keep the genesis_basin since the basin info is at the forecast level
+    df_tracks = df_tracks.drop(columns=["name", "genesis_basin"])
     df_tracks = df_tracks.rename(columns={"id": "forecast_id"})
     df_tracks["point_id"] = [str(uuid.uuid4()) for _ in range(len(df_tracks))]
 
@@ -409,7 +439,6 @@ def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
 def _process_cxml_to_df(
     cxml_path: Union[str, Path],
     stage: Literal["dev", "prod", "local"],
-    save_dir: Union[str, Path],
     xsl_path: Optional[Union[str, Path]] = None,
 ) -> Optional[pd.DataFrame]:
     """
@@ -423,8 +452,6 @@ def _process_cxml_to_df(
         Path to the CXML file to process
     stage : {"dev", "prod", "local"}
         Source location of the file
-    save_dir : str or Path
-        Directory or container where the file is stored
     xsl_path : str or Path, optional
         Path to XSL transformation file. If None, uses default transformation
 
@@ -447,10 +474,8 @@ def _process_cxml_to_df(
             xml = et.parse(str(cxml_path))
         elif stage == "dev" or stage == "prod":
             # Remove the first directory level since this is the container
-            cxml_path = str(Path(*Path(cxml_path).parts[1:]))
-            cxml_data = stratus.load_blob_data(
-                cxml_path, container_name=save_dir
-            )
+            container, path = str(cxml_path).split("/", 1)
+            cxml_data = stratus.load_blob_data(path, container_name=container)
             xml = et.parse(io.BytesIO(cxml_data))
         else:
             logger.error(f"Invalid stage: {stage}")
@@ -478,7 +503,7 @@ def _process_cxml_to_df(
     df.dropna(
         subset=["validTime", "latitude", "longitude"], how="any", inplace=True
     )
-    # Remove all ensemble forecasts
+    # Remove all ensemble forecasts and "analysis"
     df = df[df.type == "forecast"]
 
     # TODO: Confirm that lastClosedIsobar and maximumWindRadius are always null
