@@ -60,7 +60,7 @@ TRACK_SCHEMA = pa.DataFrameSchema(
         "issued_time": pa.Column(pd.Timestamp),
         "provider": pa.Column(str, nullable=False),
         "forecast_id": pa.Column(str, nullable=False),
-        "number": pa.Column(str, nullable=False),
+        "number": pa.Column(str, nullable=True),
         "basin": pa.Column(
             str, pa.Check.isin(list(BASIN_MAPPING.values())), nullable=False
         ),

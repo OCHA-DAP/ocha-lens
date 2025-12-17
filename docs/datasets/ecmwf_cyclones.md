@@ -53,7 +53,7 @@ This function outputs cleaned tracks for all forecasts in the raw input data. No
 | `storm_id` | `str` | Optional | - | Links to storm metadata |
 | `point_id` | `str` | **Required** | - | Unique identifier for this track point |
 | `forecast_id` | `str` | **Required** | - | Forecast ID from ECMWF |
-| `number` | `str` | **Required** | - | Storm number identifier |
+| `number` | `str` | Optional | - | Storm number identifier |
 | `issued_time` | `pd.Timestamp` | **Required** | - | When the forecast was issued |
 | `valid_time` | `pd.Timestamp` | **Required** | - | Time this track point is valid for |
 | `provider` | `str` | **Required** | - | Forecast provider |
