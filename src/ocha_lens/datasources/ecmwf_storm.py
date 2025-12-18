@@ -181,13 +181,22 @@ def download_forecasts(
 
     # Now download
     try:
-        logger.debug(f"{base_filename} downloading")
         req = requests.get(filename, timeout=(10, None))
     except Exception as e:
         logger.error(e)
         return
-    if req.status_code != 200:
-        logger.debug(f"{base_filename} invalid URL")
+    if req.status_code == 404:
+        logger.warning(f"{base_filename} invalid URL")
+        return
+    elif req.status_code == 500:
+        logger.warning(f"{base_filename} server error")
+        return
+    elif req.status_code == 200:
+        logger.info(f"Downloaded {base_filename} successfully")
+    else:
+        logger.warning(
+            f"Unexpected status code {req.status_code} for {base_filename}"
+        )
         return
 
     if stage == "local":
