@@ -440,6 +440,11 @@ def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
     gdf_tracks = _to_gdf(df_tracks_dropped)
 
     assert len(gdf_tracks == len(df_))
+    # Need to handle duplicates here. Some archival ECMWF forecasts
+    # have duplicates coming from the raw CXML files. Duplicates may
+    # be in the same source file, or as result of some forecasts being
+    # in incorrectly labelled files. We'll drop duplicates in cases where
+    # ALL timing, position, and intensity values are the same.
     gdf_tracks_dropped = gdf_tracks.drop_duplicates(
         subset=UNIQUE_COLS, keep="first"
     )
