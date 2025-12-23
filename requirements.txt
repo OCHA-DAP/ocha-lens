@@ -55,7 +55,7 @@ docutils==0.21.2
     # via
     #   myst-parser
     #   sphinx
-filelock==3.19.1
+filelock==3.20.1
     # via virtualenv
 fsspec==2025.9.0
     # via dask
