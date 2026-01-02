@@ -675,13 +675,13 @@ def _parse_forecast_advisory(
     forecast_points = []
     lines = advisory_text.split("\n")
 
-    # Preprocessing: remove "..." and extra spaces
-    lines = [ln.replace("...", " ").replace("  ", " ") for ln in lines]
-
     latitude = longitude = maxwind = valid_time = None
     radii_34 = radii_50 = radii_64 = None
 
     for ln in lines:
+        # Preprocessing the line (following HDX pattern)
+        ln = ln.replace("...", " ")
+        ln = ln.replace("  ", " ")
         forecast_line = ln.split(" ")
 
         # Parse FORECAST VALID or OUTLOOK VALID lines
@@ -692,8 +692,10 @@ def _parse_forecast_advisory(
                 valid_time = _parse_valid_time(forecast_line[2], issuance)
                 latitude = parse_lat_lon(forecast_line[3])
                 longitude = parse_lat_lon(forecast_line[4])
-            except Exception:
-                logger.debug(f"Could not parse position from: {ln[:50]}")
+            except Exception as e:
+                logger.debug(
+                    f"Could not parse position from: {ln[:80]} | Error: {e}"
+                )
                 latitude = longitude = valid_time = None
                 continue
 
@@ -791,17 +793,12 @@ def _parse_forecast_advisory(
 
 def _fetch_current_storms_json() -> Optional[dict]:
     """
-    Fetch current storms JSON from NHC API.
+    Fetch current storms JSON from NHC CurrentStorms.json file.
 
     Returns
     -------
     dict or None
         Parsed JSON response, or None if fetch fails
-
-    Notes
-    -----
-    Fetches from https://www.nhc.noaa.gov/CurrentStorms.json
-    Uses a 10-second timeout.
     """
     try:
         response = requests.get(NHC_CURRENT_STORMS_URL, timeout=10)
@@ -950,15 +947,21 @@ def _process_nhc_to_df(
                 issuance = forecast_advisory.get("issuance")
 
                 if advisory_url and issuance:
-                    logger.debug(
-                        f"Fetching forecast advisory from {advisory_url}"
+                    logger.info(
+                        f"Fetching forecast advisory for {atcf_id} from {advisory_url}"
                     )
 
                     advisory_text = _fetch_forecast_advisory(advisory_url)
 
                     if advisory_text:
+                        logger.info(
+                            f"Successfully fetched advisory for {atcf_id}, parsing..."
+                        )
                         forecast_points = _parse_forecast_advisory(
                             advisory_text, atcf_id, storm_name, issuance, basin
+                        )
+                        logger.info(
+                            f"Parsed {len(forecast_points)} forecast points for {atcf_id}"
                         )
 
                         # Add metadata and leadtime to forecast points
@@ -987,14 +990,18 @@ def _process_nhc_to_df(
 
                         all_records.extend(forecast_points)
                         logger.debug(
-                            f"Added {len(forecast_points)} forecast points"
+                            f"Added {len(forecast_points)} forecast points for {atcf_id}"
                         )
                     else:
                         logger.warning(
-                            f"Failed to fetch advisory for {atcf_id}"
+                            f"Failed to fetch advisory text for {atcf_id} from {advisory_url}"
                         )
                 else:
-                    logger.debug(f"No advisory URL or issuance for {atcf_id}")
+                    logger.debug(
+                        f"Missing advisory URL or issuance for {atcf_id}"
+                    )
+            else:
+                logger.debug(f"No forecastAdvisory found for {atcf_id}")
 
     if not all_records:
         logger.warning("No records extracted from active storms")
