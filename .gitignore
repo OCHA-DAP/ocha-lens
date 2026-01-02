@@ -56,3 +56,5 @@ docs/api/generated/
 data/*
 */storm/*
 __marimo__
+
+docs/diagrams/*
