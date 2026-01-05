@@ -107,6 +107,12 @@ ATCF_ADECK_COLUMNS = [
     "seas4",  # 34: Seas radius in NW quadrant
 ]
 
+# Extend with additional columns for newer ATCF formats (following HDX pattern)
+# These handle extended ATCF data that can have up to 75+ columns
+for i in range(1, 21):
+    ATCF_ADECK_COLUMNS.append(f"userdefine{i}")
+    ATCF_ADECK_COLUMNS.append(f"userdata{i}")
+
 # Official forecast technique identifiers
 OFFICIAL_FORECAST_TECHS = [
     "OFCL",  # Official NHC forecast
@@ -187,8 +193,14 @@ TRACK_SCHEMA = pa.DataFrameSchema(
     },
     strict=True,
     coerce=True,
-    # unique=["atcf_id", "valid_time", "leadtime", "issued_time", "forecast_type"],
-    # report_duplicates="all",
+    unique=[
+        "atcf_id",
+        "valid_time",
+        "leadtime",
+        "issued_time",
+        "forecast_type",
+    ],
+    report_duplicates="all",
     checks=[
         pa.Check(
             lambda gdf: check_crs(gdf, "EPSG:4326"),
@@ -429,20 +441,19 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
         open_func = open
         mode = "r"
 
-    # Read CSV with specified columns (no header in ATCF files)
-    # Note: ATCF files can have more than 35 columns (extended fields)
-    # We only read the first 35 standard columns
+    # Read CSV with pre-defined columns (no header in ATCF files)
+    # Note: ATCF files can have variable number of columns per line (30-75+)
+    # Using extended column list (75 columns) to handle all ATCF formats
     try:
         with open_func(file_path, mode) as f:
             df = pd.read_csv(
                 f,
                 header=None,
                 names=ATCF_ADECK_COLUMNS,
-                usecols=range(len(ATCF_ADECK_COLUMNS)),
                 skipinitialspace=True,
                 na_values=["", " ", "null"],
                 keep_default_na=True,
-                low_memory=False,  # Suppress dtype warnings for mixed-type columns
+                engine="python",  # Python engine handles variable-length rows
             )
     except Exception as e:
         logger.error(f"Failed to read ATCF file {file_path}: {e}")
@@ -466,11 +477,15 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
 
     logger.debug(f"Read {len(df)} records from {file_path}")
 
-    # Filter for official forecasts only
+    # Filter for official forecasts only (OFCL, OFCP, etc.)
+    # Excludes CARQ (best track observations) and model forecasts
     df = df[df["tech"].isin(OFFICIAL_FORECAST_TECHS)].copy()
 
     if df.empty:
-        logger.warning(f"No official forecasts found in {file_path}")
+        logger.warning(
+            f"No official forecast data (OFCL) found in {file_path}. "
+            f"Storm may not have had forecasts issued."
+        )
         return pd.DataFrame(
             columns=[
                 "atcf_id",
@@ -1100,27 +1115,75 @@ def _process_nhc_to_df(
 # Public API Functions
 
 
+def _list_available_atcf_files(year: int, basin: str) -> List[int]:
+    """
+    List available ATCF A-deck files for a given year and basin.
+
+    Parameters
+    ----------
+    year : int
+        Year to check
+    basin : str
+        Basin code (AL, EP, or CP)
+
+    Returns
+    -------
+    list of int
+        Storm numbers that have available files
+
+    Raises
+    ------
+    Exception
+        If FTP connection or directory listing fails
+    """
+    import re
+    from ftplib import FTP
+
+    basin_lower = basin.lower()
+    ftp_host = "ftp.nhc.noaa.gov"
+    ftp_path = f"/atcf/archive/{year}/"
+
+    # Connect to FTP server
+    with FTP(ftp_host, timeout=30) as ftp:
+        ftp.login()  # Anonymous login
+
+        # List files in directory
+        files = ftp.nlst(ftp_path)
+
+        # Pattern: aal012023.dat.gz, aep092023.dat.gz, etc.
+        pattern = rf"a{basin_lower}(\d{{2}}){year}\.dat\.gz"
+
+        storm_numbers = []
+        for file in files:
+            # Extract just the filename from full path
+            filename = file.split("/")[-1]
+            match = re.match(pattern, filename)
+            if match:
+                storm_numbers.append(int(match.group(1)))
+
+        storm_numbers = sorted(set(storm_numbers))
+
+        logger.info(
+            f"Found {len(storm_numbers)} {basin} storms in {year} archive: "
+            f"{storm_numbers if len(storm_numbers) <= 10 else f'{storm_numbers[:10]}...'}"
+        )
+
+        return storm_numbers
+
+
 def download_nhc_archive(
     year: int,
-    storm_number: Optional[Union[int, List[int]]] = None,
     basin: str = "AL",
     cache_dir: str = "storm",
     use_cache: bool = True,
 ) -> List[Path]:
     """
-    Download ATCF archive files for historical storm data.
-
-    Downloads A-deck (forecast) files from the ATCF archive at
-    ftp.nhc.noaa.gov for a specific year and basin. Can download
-    all storms for a year or specific storm numbers.
+    Download ATCF archive files for all storms in a given year and basin.
 
     Parameters
     ----------
     year : int
         Year to download (e.g., 2023, 2024)
-    storm_number : int or list of int, optional
-        Specific storm number(s) to download (1-30).
-        If None, downloads all storms for the year
     basin : str, default "AL"
         Basin code: "AL" (Atlantic), "EP" (Eastern Pacific),
         or "CP" (Central Pacific)
@@ -1136,6 +1199,9 @@ def download_nhc_archive(
 
     Notes
     -----
+    Queries the FTP server to find all available storms for the specified
+    year and basin, then downloads only those files.
+
     Files are saved as: atcf_{basin}_{number}_{year}.dat in
     the {cache_dir}/raw/atcf/ subdirectory.
 
@@ -1145,23 +1211,19 @@ def download_nhc_archive(
     --------
     >>> # Download all Atlantic storms from 2023
     >>> paths = download_nhc_archive(2023, basin="AL")
-    >>> # Download specific storms
-    >>> paths = download_nhc_archive(2023, storm_number=[14, 15], basin="AL")
-    >>> # Download Eastern Pacific storm 9 from 2023
-    >>> paths = download_nhc_archive(2023, storm_number=9, basin="EP")
+    >>> # Download all Eastern Pacific storms from 2023
+    >>> paths = download_nhc_archive(2023, basin="EP")
     """
     # Create cache directory
     cache_path = Path(cache_dir) / "raw" / "atcf"
     os.makedirs(cache_path, exist_ok=True)
 
-    # Determine which storms to download
-    if storm_number is None:
-        # Download all storms (typically 1-30)
-        storm_numbers = range(1, 31)
-    elif isinstance(storm_number, int):
-        storm_numbers = [storm_number]
-    else:
-        storm_numbers = storm_number
+    # Query FTP server to find available storms
+    storm_numbers = _list_available_atcf_files(year, basin)
+
+    if not storm_numbers:
+        logger.warning(f"No storms found for {basin} {year}")
+        return []
 
     downloaded_files = []
     basin_lower = basin.lower()
@@ -1219,7 +1281,6 @@ def download_nhc_archive(
 
 def _load_nhc_archive(
     year: int,
-    storm_number: Optional[Union[int, List[int]]] = None,
     basin: str = "AL",
     cache_dir: str = "storm",
     use_cache: bool = True,
@@ -1234,8 +1295,6 @@ def _load_nhc_archive(
     ----------
     year : int
         Year to load
-    storm_number : int or list of int, optional
-        Specific storm number(s) to load. If None, loads all storms
     basin : str, default "AL"
         Basin code (AL, EP, or CP)
     cache_dir : str, default "storm"
@@ -1258,7 +1317,6 @@ def _load_nhc_archive(
 
     file_paths = download_nhc_archive(
         year=year,
-        storm_number=storm_number,
         basin=basin,
         cache_dir=cache_dir,
         use_cache=use_cache,
@@ -1367,8 +1425,7 @@ def load_nhc(
     cache_dir: str = "storm",
     use_cache: bool = False,
     year: Optional[int] = None,
-    storm_number: Optional[Union[int, List[int]]] = None,
-    basin: str = "AL",
+    basin: Optional[str] = None,
 ) -> Optional[pd.DataFrame]:
     """
     Load and process NHC storm data from CurrentStorms.json or historical archive.
@@ -1388,12 +1445,9 @@ def load_nhc(
     year : int, optional
         Year for archive mode (e.g., 2023). If specified, loads
         historical ATCF data instead of current json data
-    storm_number : int or list of int, optional
-        Specific storm number(s) for archive mode (1-30).
-        If None in archive mode, loads all storms for the year
-    basin : str, default "AL"
+    basin : str, optional
         Basin code for archive mode: "AL" (Atlantic), "EP" (Eastern
-        Pacific), or "CP" (Central Pacific)
+        Pacific), or "CP" (Central Pacific). If None, loads all basins
 
     Returns
     -------
@@ -1420,28 +1474,49 @@ def load_nhc(
     >>> df = load_nhc()
     >>> df = load_nhc(file_path="storm/raw/nhc_20231225_1200.json")
 
+    >>> # Archive mode: All storms from all basins in 2023
+    >>> df = load_nhc(year=2023)
+
     >>> # Archive mode: All Atlantic storms from 2023
     >>> df = load_nhc(year=2023, basin="AL")
-
-    >>> # Specific storm from archive
-    >>> df = load_nhc(year=2023, storm_number=14, basin="AL")
-
-    >>> # Multiple storms
-    >>> df = load_nhc(year=2023, storm_number=[14, 15, 16], basin="AL")
 
     >>> # Eastern Pacific storms
     >>> df = load_nhc(year=2024, basin="EP")
     """
     # Archive mode: year is specified
     if year is not None:
-        logger.info(f"Loading archive data for {basin} {year}")
-        return _load_nhc_archive(
-            year=year,
-            storm_number=storm_number,
-            basin=basin,
-            cache_dir=cache_dir,
-            use_cache=use_cache,
-        )
+        # If basin is None, load all basins
+        if basin is None:
+            logger.info(f"Loading archive data for all basins in {year}")
+            all_dfs = []
+            for basin_code in ["AL", "EP", "CP"]:
+                df = _load_nhc_archive(
+                    year=year,
+                    basin=basin_code,
+                    cache_dir=cache_dir,
+                    use_cache=use_cache,
+                )
+                if df is not None and not df.empty:
+                    all_dfs.append(df)
+
+            if not all_dfs:
+                logger.warning(f"No data loaded for any basin in {year}")
+                return None
+
+            combined_df = pd.concat(all_dfs, ignore_index=True)
+            logger.info(
+                f"Loaded {len(combined_df)} records from "
+                f"{len(all_dfs)} basins in {year}"
+            )
+            return combined_df
+        else:
+            logger.info(f"Loading archive data for {basin} {year}")
+            return _load_nhc_archive(
+                year=year,
+                basin=basin,
+                cache_dir=cache_dir,
+                use_cache=use_cache,
+            )
 
     # Current mode: download from API or load from file
     if file_path is None:
