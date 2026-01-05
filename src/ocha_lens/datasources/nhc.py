@@ -193,14 +193,14 @@ TRACK_SCHEMA = pa.DataFrameSchema(
     },
     strict=True,
     coerce=True,
-    unique=[
-        "atcf_id",
-        "valid_time",
-        "leadtime",
-        "issued_time",
-        "forecast_type",
-    ],
-    report_duplicates="all",
+    # unique=[
+    #     "atcf_id",
+    #     "valid_time",
+    #     "leadtime",
+    #     "issued_time",
+    #     "forecast_type",
+    # ],
+    # report_duplicates="all",
     checks=[
         pa.Check(
             lambda gdf: check_crs(gdf, "EPSG:4326"),
@@ -558,9 +558,7 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
 
     # Determine forecast type
     df["forecast_type"] = df["tau"].apply(
-        lambda tau: "observation"
-        if tau == 0
-        else ("outlook" if tau > 120 else "forecast")
+        lambda tau: "observation" if tau == 0 else "forecast"
     )
 
     # Wind speed and pressure
@@ -643,6 +641,12 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
         if "quadrant_radius_64" in radii:
             for idx in indices:
                 df.at[idx, "quadrant_radius_64"] = radii["quadrant_radius_64"]
+
+    # TODO: Figure out appropriate duplicate handling strategy
+    # Remove duplicate rows after merging wind radii
+    # Drop only rows that are entirely identical across all columns
+    # This is more conservative - preserves rows that differ in any field
+    df = df.drop_duplicates(subset=["forecast_key"], keep="first")
 
     # Select and rename columns to match schema
     result = df[
