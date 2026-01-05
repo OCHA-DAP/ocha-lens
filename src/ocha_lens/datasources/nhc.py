@@ -46,9 +46,9 @@ BASIN_CODE_MAPPING = {
 
 # NHC API URL
 NHC_CURRENT_STORMS_URL = "https://www.nhc.noaa.gov/CurrentStorms.json"
-NHC_CURRENT_STORMS_URL = (
-    "https://www.nhc.noaa.gov/productexamples/NHC_JSON_Sample.json"
-)
+
+# NHC storm name lookup table
+NHC_STORM_TABLE_URL = "https://ftp.nhc.noaa.gov/atcf/archive/storm.table"
 
 # ATCF Archive URL pattern
 ATCF_ARCHIVE_URL = (
@@ -118,7 +118,17 @@ OFFICIAL_FORECAST_TECHS = [
 STORM_SCHEMA = pa.DataFrameSchema(
     {
         "atcf_id": pa.Column(str, nullable=False),
-        "name": pa.Column(str, nullable=True),
+        "name": pa.Column(
+            str,
+            nullable=True,
+            checks=[
+                pa.Check(
+                    lambda s: s.upper() == s,
+                    error="County must be uppercase",
+                    element_wise=True,
+                )
+            ],
+        ),
         "number": pa.Column(str, nullable=False),
         "season": pa.Column(
             "int64", pa.Check.between(2000, 2050), nullable=False
@@ -193,6 +203,54 @@ TRACK_SCHEMA = pa.DataFrameSchema(
 
 
 # Helper Functions
+
+
+def _fetch_storm_names() -> dict:
+    """
+    Fetch storm name lookup table from NHC archive.
+
+    Returns
+    -------
+    dict
+        Mapping of ATCF ID (lowercase) to storm name
+        Example: {'al132023': 'LEE', 'ep092023': 'HILARY'}
+
+    Notes
+    -----
+    Downloads and parses the official NHC storm.table file which contains
+    the authoritative mapping of storm IDs to names. This is more reliable
+    than extracting names from ATCF A-deck files where OFCL forecasts don't
+    include storm names.
+    """
+    try:
+        response = requests.get(NHC_STORM_TABLE_URL, timeout=30)
+        response.raise_for_status()
+
+        # Parse the table
+        storm_names = {}
+        for line in response.text.strip().split("\n"):
+            if not line.strip():
+                continue
+
+            # Split by comma
+            cols = [c.strip() for c in line.split(",")]
+
+            if len(cols) < 21:
+                continue
+
+            name = cols[0]  # Column 1: Storm name
+            atcf_id = cols[20]  # Column 21: ATCF ID
+
+            if name and atcf_id:
+                # Convert to lowercase for case-insensitive lookup
+                storm_names[atcf_id.lower()] = name
+
+        logger.info(f"Loaded {len(storm_names)} storm names from NHC archive")
+        return storm_names
+
+    except Exception as e:
+        logger.warning(f"Failed to fetch storm name table: {e}")
+        return {}
 
 
 def _get_basin_code(atcf_id: str) -> str:
@@ -468,8 +526,20 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
     # Extract storm number
     df["number"] = df["cy"].astype(str).str.zfill(2)
 
-    # Get storm name (if available)
-    df["name"] = df["stormname"].replace(["", " ", "UNNAMED"], None)
+    # Get storm name from official NHC storm.table
+    # This is more reliable than ATCF stormname field which is blank for OFCL forecasts
+    storm_name_lookup = _fetch_storm_names()
+
+    # Map storm names using ATCF ID
+    df["name"] = df["atcf_id"].map(storm_name_lookup)
+
+    # Fallback to stormname field if lookup fails (for very recent storms)
+    if df["name"].isna().any():
+        df["name"] = df["name"].fillna(
+            df["stormname"].replace(["", " ", "UNNAMED"], None)
+        )
+        # Forward-fill within storm if still missing
+        df["name"] = df.groupby("atcf_id")["name"].ffill().bfill()
 
     # Determine forecast type
     df["forecast_type"] = df["tau"].apply(
@@ -756,7 +826,6 @@ def _parse_forecast_advisory(
                 logger.debug(
                     f"Could not parse wind radii from: {ln[:50]} - {e}"
                 )
-
         # If we have all components, save the point
         if (
             latitude is not None
@@ -768,7 +837,7 @@ def _parse_forecast_advisory(
                 forecast_points.append(
                     {
                         "atcf_id": storm_id,
-                        "name": storm_name,
+                        "name": storm_name.upper(),
                         "basin": basin,
                         "valid_time": valid_time,
                         "latitude": latitude,
@@ -803,6 +872,7 @@ def _fetch_current_storms_json() -> Optional[dict]:
     try:
         response = requests.get(NHC_CURRENT_STORMS_URL, timeout=10)
         response.raise_for_status()
+        print(response.json())
         return response.json()
     except requests.exceptions.Timeout:
         logger.error(f"Timeout fetching {NHC_CURRENT_STORMS_URL}")
@@ -843,7 +913,7 @@ def _extract_current_observation(storm_dict: dict) -> dict:
 
     return {
         "atcf_id": atcf_id,
-        "name": storm_dict.get("name"),
+        "name": storm_dict.get("name").upper(),
         "number": atcf_id[2:4],  # Extract "09" from "ep09"
         "basin": basin,
         "provider": provider,
@@ -1295,7 +1365,7 @@ def download_nhc(
 def load_nhc(
     file_path: Optional[str] = None,
     cache_dir: str = "storm",
-    use_cache: bool = True,
+    use_cache: bool = False,
     year: Optional[int] = None,
     storm_number: Optional[Union[int, List[int]]] = None,
     basin: str = "AL",
@@ -1313,7 +1383,7 @@ def load_nhc(
         Path to NHC JSON file. If None, downloads data
     cache_dir : str, default "storm"
         Directory for caching downloaded files
-    use_cache : bool, default True
+    use_cache : bool, default False
         Whether to use existing cached file if available
     year : int, optional
         Year for archive mode (e.g., 2023). If specified, loads
