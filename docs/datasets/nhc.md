@@ -75,7 +75,7 @@ This function outputs a table containing one row per unique storm (identified by
 
 | Field | Type | Required | Validation | Description |
 |-------|------|----------|------------|-------------|
-| `atcf_id` | `str` | **Required** | Part of unique constraint | ATCF storm identifier (e.g., "al102023") |
+| `atcf_id` | `str` | **Required** | Part of unique constraint | ATCF storm identifier (e.g., "AL102023") |
 | `name` | `str` | Optional | - | Storm name, or None for unnamed systems |
 | `number` | `str` | **Required** | - | Storm number (e.g., "10") |
 | `season` | `int64` | **Required** | 2000-2050 range | Storm season year |
@@ -126,15 +126,15 @@ gis_data = lens.nhc.get_current_storm_gis()
 
 # Download specific products for one storm
 gis_data = lens.nhc.get_current_storm_gis(
-    atcf_id="al102023",
+    atcf_id="AL102023",
     products=["cone", "wind_radii", "track"]
 )
 
 # Load the forecast cone
-cone = lens.nhc.load_nhc_gis(gis_data["al102023"]["cone"])
+cone = lens.nhc.load_nhc_gis(gis_data["AL102023"]["cone"])
 
 # Load wind radii polygons
-wind_radii = lens.nhc.load_nhc_gis(gis_data["al102023"]["wind_radii"])
+wind_radii = lens.nhc.load_nhc_gis(gis_data["AL102023"]["wind_radii"])
 ```
 
 ### Available GIS Products
@@ -158,7 +158,7 @@ For **historical storms**, use the archive URL constructor:
 
 ```python
 # Download historical GIS (if available, typically 2008+)
-path = lens.nhc.download_nhc_gis("al102023", product="forecast")
+path = lens.nhc.download_nhc_gis("AL102023", product="forecast")
 cone = lens.nhc.load_nhc_gis(path)
 ```
 
@@ -188,7 +188,7 @@ print(tracks[['valid_time', 'quadrant_radius_34', 'quadrant_radius_50', 'quadran
 ```python
 # Load wind radii polygons
 gis_data = lens.nhc.get_current_storm_gis(products=["wind_radii"])
-wind_polys = lens.nhc.load_nhc_gis(gis_data["al102023"]["wind_radii"])
+wind_polys = lens.nhc.load_nhc_gis(gis_data["AL102023"]["wind_radii"])
 
 # Separate by wind threshold
 ts_winds = wind_polys[wind_polys.RADII == 34]  # Tropical storm force
@@ -281,11 +281,11 @@ For global coverage, use the IBTrACS or ECMWF modules.
 - Storms that cross basin boundaries keep their original designation
 
 **Example:**
-Hurricane Gilma (2024) originated in the Eastern Pacific with ATCF ID `ep072024`. When it crossed 140°W into the Central Pacific on August 27, 2024:
+Hurricane Gilma (2024) originated in the Eastern Pacific with ATCF ID `EP072024`. When it crossed 140°W into the Central Pacific on August 27, 2024:
 - Geographic location: Central Pacific (west of 140°W)
 - Forecast responsibility: Transferred from NHC to CPHC
 - `basin` field in data: Remained **"EP"** (Eastern Pacific)
-- ATCF ID: Remained `ep072024`
+- ATCF ID: Remained `EP072024`
 
 This means all track points for Gilma have `basin='EP'`, even those west of 140°W. To determine actual geographic location, use the `longitude` field:
 - East of 140°W = Eastern Pacific geographic region
@@ -335,7 +335,7 @@ Archive data contains multiple forecasts issued at different times for the same 
 ```python
 # Get all 24-hour forecasts for a storm
 forecasts_24h = gdf_tracks[
-    (gdf_tracks.atcf_id == "al102023") &
+    (gdf_tracks.atcf_id == "AL102023") &
     (gdf_tracks.leadtime == 24)
 ]
 
@@ -371,9 +371,9 @@ cache_dir/
 │   │   ├── atcf_ep_09_2023.dat         # Eastern Pacific storm 9
 │   │   └── atcf_cp_01_2024.dat         # Central Pacific storm 1
 │   └── gis/
-│       ├── al102023_cone_adv006.zip    # Forecast cone (advisory 006)
-│       ├── al102023_track_adv006.zip   # Forecast track
-│       ├── al102023_wind_radii_adv006.zip  # Wind radii polygons
+│       ├── al102023_cone_adv006.zip    # Forecast cone (Hurricane Idalia, adv 006)
+│       ├── al102023_track_adv006.zip   # Forecast track (Hurricane Idalia)
+│       ├── al102023_wind_radii_adv006.zip  # Wind radii (Hurricane Idalia)
 │       ├── al102023_forecast.zip       # Archive GIS (for historical)
 │       └── ep092024_cone_adv003.kmz    # KMZ format (Google Earth)
 ```

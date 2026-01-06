@@ -239,8 +239,8 @@ def _fetch_storm_names() -> dict:
     Returns
     -------
     dict
-        Mapping of ATCF ID (lowercase) to storm name
-        Example: {'al132023': 'LEE', 'ep092023': 'HILARY'}
+        Mapping of ATCF ID (uppercase) to storm name
+        Example: {'AL132023': 'LEE', 'EP092023': 'HILARY'}
 
     Notes
     -----
@@ -269,8 +269,8 @@ def _fetch_storm_names() -> dict:
             atcf_id = cols[20]  # Column 21: ATCF ID
 
             if name and atcf_id:
-                # Convert to lowercase for case-insensitive lookup
-                storm_names[atcf_id.lower()] = name
+                # Convert to uppercase to match output ATCF ID format
+                storm_names[atcf_id.upper()] = name
 
         logger.info(f"Loaded {len(storm_names)} storm names from NHC archive")
         return storm_names
@@ -287,7 +287,7 @@ def _get_basin_code(atcf_id: str) -> str:
     Parameters
     ----------
     atcf_id : str
-        ATCF storm identifier (e.g., "ep092023", "al142024")
+        ATCF storm identifier (e.g., "EP092023", "AL142024")
 
     Returns
     -------
@@ -296,9 +296,9 @@ def _get_basin_code(atcf_id: str) -> str:
 
     Examples
     --------
-    >>> _get_basin_code("ep092023")
+    >>> _get_basin_code("EP092023")
     'EP'
-    >>> _get_basin_code("al142024")
+    >>> _get_basin_code("AL142024")
     'NA'
     """
     basin_prefix = atcf_id[:2].lower()
@@ -452,12 +452,15 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
     """
     # Extract expected ATCF ID from filename (remove leading 'a' and extension)
     # Filename format: aal012023.dat or aal012023.dat.gz
+    # Uppercase basin letters to match IBTrACS format (AL012023 not al012023)
     filename = (
         file_path.stem
         if file_path.suffix != ".gz"
         else file_path.stem.replace(".dat", "")
     )
-    atcf_id = filename[1:]
+    atcf_id = (
+        filename[1:3].upper() + filename[3:]
+    )  # Uppercase basin code (first 2 chars)
 
     # Determine if file is gzipped
     if file_path.suffix == ".gz":
@@ -557,7 +560,7 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
     # Validate ATCF ID from filename matches data
     year = df["yyyymmddhh"].astype(str).str[:4]
     expected_ids = (
-        df["basin"].str.lower() + df["cy"].astype(str).str.zfill(2) + year
+        df["basin"].str.upper() + df["cy"].astype(str).str.zfill(2) + year
     )
     if expected_ids.unique()[0] != atcf_id:
         logger.error(
@@ -782,7 +785,7 @@ def _parse_forecast_advisory(
     advisory_text : str
         Raw text from <pre> tag in advisory HTML
     storm_id : str
-        ATCF storm identifier (e.g., "ep092023")
+        ATCF storm identifier (e.g., "EP092023")
     storm_name : str
         Storm name
     issuance : str
@@ -811,8 +814,8 @@ def _parse_forecast_advisory(
     for line in lines[:10]:  # Check first 10 lines only
         match = re.search(atcf_pattern, line)
         if match:
-            advisory_atcf_id = match.group(1).lower()
-            if advisory_atcf_id != storm_id.lower():
+            advisory_atcf_id = match.group(1).upper()
+            if advisory_atcf_id != storm_id.upper():
                 logger.error(
                     f"ATCF ID mismatch: parameter={storm_id}, "
                     f"advisory text={advisory_atcf_id}. Skipping advisory."
@@ -990,7 +993,10 @@ def _extract_current_observation(storm_dict: dict) -> dict:
     The current observation includes both wind and pressure data,
     unlike forecasts which only have wind.
     """
-    atcf_id = storm_dict["id"]
+    # Uppercase basin code to match IBTrACS format (AL012023 not al012023)
+    atcf_id_raw = storm_dict["id"]
+    atcf_id = atcf_id_raw[:2].upper() + atcf_id_raw[2:]
+
     basin = _get_basin_code(atcf_id)
     provider = _get_provider(basin)
 
@@ -1000,7 +1006,7 @@ def _extract_current_observation(storm_dict: dict) -> dict:
     return {
         "atcf_id": atcf_id,
         "name": storm_dict.get("name").upper(),
-        "number": atcf_id[2:4],  # Extract "09" from "ep09"
+        "number": atcf_id[2:4],  # Extract "09" from "EP092023"
         "basin": basin,
         "provider": provider,
         "issued_time": last_update,
@@ -1078,7 +1084,10 @@ def _process_nhc_to_df(
     logger.info(f"Processing {len(active_storms)} active storms")
 
     for storm in active_storms:
-        atcf_id = storm["id"]
+        # Uppercase basin code to match IBTrACS format (AL012023 not al012023)
+        atcf_id_raw = storm["id"]
+        atcf_id = atcf_id_raw[:2].upper() + atcf_id_raw[2:]
+
         storm_name = storm.get("name", "Unnamed")
         basin = _get_basin_code(atcf_id)
 
@@ -1633,7 +1642,7 @@ def download_nhc_gis(
     Parameters
     ----------
     atcf_id : str
-        ATCF storm identifier (e.g., "al102023", "ep092024")
+        ATCF storm identifier (e.g., "AL102023", "EP092024")
     cache_dir : str, default "storm"
         Directory to store shapefile ZIP files
     product : str, default "forecast"
@@ -1658,8 +1667,8 @@ def download_nhc_gis(
 
     Examples
     --------
-    >>> path = download_nhc_gis("al102023")
-    >>> path = download_nhc_gis("ep092024", product="besttrack")
+    >>> path = download_nhc_gis("AL102023")
+    >>> path = download_nhc_gis("EP092024", product="besttrack")
     """
     # Parse ATCF ID to extract components
     basin = atcf_id[:2].lower()  # "al", "ep", "cp"
@@ -1864,7 +1873,7 @@ def get_current_storm_gis(
     Parameters
     ----------
     atcf_id : str, optional
-        Specific storm to download (e.g., "al102023"). If None, downloads
+        Specific storm to download (e.g., "AL102023"). If None, downloads
         for all active storms.
     products : list of str, optional
         GIS products to download. If None, downloads default set:
@@ -1879,7 +1888,7 @@ def get_current_storm_gis(
     dict
         Dictionary mapping storm IDs to product paths:
         {
-            "al102023": {
+            "AL102023": {
                 "cone": Path(...),
                 "track": Path(...),
                 "wind_radii": Path(...)
@@ -1893,12 +1902,12 @@ def get_current_storm_gis(
 
     >>> # Get specific products for one storm
     >>> gis_data = nhc.get_current_storm_gis(
-    ...     atcf_id="al102023",
+    ...     atcf_id="AL102023",
     ...     products=["cone", "wind_radii"]
     ... )
 
     >>> # Load the cone
-    >>> cone = nhc.load_nhc_gis(gis_data["al102023"]["cone"])
+    >>> cone = nhc.load_nhc_gis(gis_data["AL102023"]["cone"])
     """
     # Default products
     if products is None:
@@ -1974,8 +1983,8 @@ def load_nhc_gis(
 
     Examples
     --------
-    >>> gdf = load_nhc_gis("storm/raw/gis/al102023_forecast.zip")
-    >>> cone = load_nhc_gis("al102023_forecast.zip", layer_name="al102023_5day_pgn")
+    >>> gdf = load_nhc_gis("storm/raw/gis/AL102023_forecast.zip")
+    >>> cone = load_nhc_gis("AL102023_forecast.zip", layer_name="al102023_5day_pgn")
     """
     file_path = Path(file_path)
 
