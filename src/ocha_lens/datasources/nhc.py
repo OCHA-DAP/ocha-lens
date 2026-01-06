@@ -341,7 +341,8 @@ def _parse_valid_time(valid_time_str: str, issuance: str) -> pd.Timestamp:
     if day < issuance_dt.day:
         forecast_dt = forecast_dt + relativedelta(months=1)
 
-    return pd.Timestamp(forecast_dt, tz="UTC")
+    # Convert to pandas Timestamp (forecast_dt already has timezone from issuance_dt)
+    return pd.Timestamp(forecast_dt)
 
 
 def _get_provider(basin: str) -> str:
@@ -768,15 +769,39 @@ def _parse_forecast_advisory(
     radii_34 = radii_50 = radii_64 = None
 
     for ln in lines:
+        # Save original line for pattern matching before preprocessing
+        original_ln = ln
+
         # Preprocessing the line (following HDX pattern)
         ln = ln.replace("...", " ")
         ln = ln.replace("  ", " ")
-        forecast_line = ln.split(" ")
+        forecast_line = ln.split()
 
         # Parse FORECAST VALID or OUTLOOK VALID lines
         if (
             ln.startswith("FORECAST VALID") or ln.startswith("OUTLOOK VALID")
         ) and len(forecast_line) >= 5:
+            # Save previous forecast point before starting new one
+            if all([latitude, longitude, maxwind, valid_time]) and maxwind > 0:
+                forecast_points.append(
+                    {
+                        "atcf_id": storm_id,
+                        "name": storm_name.upper(),
+                        "basin": basin,
+                        "valid_time": valid_time,
+                        "latitude": latitude,
+                        "longitude": longitude,
+                        "wind_speed": maxwind,
+                        "pressure": None,
+                        "quadrant_radius_34": radii_34,
+                        "quadrant_radius_50": radii_50,
+                        "quadrant_radius_64": radii_64,
+                    }
+                )
+            # Reset for next forecast point
+            latitude = longitude = maxwind = valid_time = None
+            radii_34 = radii_50 = radii_64 = None
+
             try:
                 valid_time = _parse_valid_time(forecast_line[2], issuance)
                 latitude = parse_lat_lon(forecast_line[3])
@@ -811,67 +836,54 @@ def _parse_forecast_advisory(
                 maxwind = None
 
         # Parse wind radii lines: "64 KT... 25NE  20SE  15SW  15NW"
-        if "KT..." in ln and any(
-            ln.startswith(f"{kt} KT") for kt in ["64", "50", "34"]
+        # Check original line (before preprocessing removed "...")
+        if "KT..." in original_ln and any(
+            original_ln.startswith(f"{kt} KT") for kt in ["64", "50", "34"]
         ):
             try:
-                # Extract wind threshold
+                # Extract wind threshold (e.g., "64" from ["64", "KT", "50NE", ...])
                 kt_val = int(forecast_line[0])
 
-                # Find the "..." and get values after it
-                parts = ln.split("...")
-                if len(parts) >= 2:
-                    radii_str = parts[1].strip()
-                    # Parse quadrants: format is "25NE  20SE  15SW  15NW"
-                    radii_parts = radii_str.split()
+                # After preprocessing, line is: ["64", "KT", "50NE", "40SE", "35SW", "50NW."]
+                # Radii values start at index 2
+                if len(forecast_line) >= 6:
+                    # Extract numerical values from strings like "25NE"
+                    ne = int("".join(filter(str.isdigit, forecast_line[2])))
+                    se = int("".join(filter(str.isdigit, forecast_line[3])))
+                    sw = int("".join(filter(str.isdigit, forecast_line[4])))
+                    nw = int("".join(filter(str.isdigit, forecast_line[5])))
 
-                    if len(radii_parts) >= 4:
-                        # Extract numerical values from strings like "25NE"
-                        ne = int("".join(filter(str.isdigit, radii_parts[0])))
-                        se = int("".join(filter(str.isdigit, radii_parts[1])))
-                        sw = int("".join(filter(str.isdigit, radii_parts[2])))
-                        nw = int("".join(filter(str.isdigit, radii_parts[3])))
+                    radii_list = [ne, se, sw, nw]
 
-                        radii_list = [ne, se, sw, nw]
-
-                        # Assign to appropriate threshold
-                        if kt_val == 64:
-                            radii_64 = radii_list
-                        elif kt_val == 50:
-                            radii_50 = radii_list
-                        elif kt_val == 34:
-                            radii_34 = radii_list
+                    # Assign to appropriate threshold
+                    if kt_val == 64:
+                        radii_64 = radii_list
+                    elif kt_val == 50:
+                        radii_50 = radii_list
+                    elif kt_val == 34:
+                        radii_34 = radii_list
             except (ValueError, IndexError) as e:
                 logger.debug(
                     f"Could not parse wind radii from: {ln[:50]} - {e}"
                 )
-        # If we have all components, save the point
-        if (
-            latitude is not None
-            and longitude is not None
-            and maxwind is not None
-            and valid_time is not None
-        ):
-            if maxwind > 0:  # Only include valid wind speeds
-                forecast_points.append(
-                    {
-                        "atcf_id": storm_id,
-                        "name": storm_name.upper(),
-                        "basin": basin,
-                        "valid_time": valid_time,
-                        "latitude": latitude,
-                        "longitude": longitude,
-                        "wind_speed": maxwind,
-                        "pressure": None,  # Forecasts don't have pressure
-                        "quadrant_radius_34": radii_34,
-                        "quadrant_radius_50": radii_50,
-                        "quadrant_radius_64": radii_64,
-                    }
-                )
 
-            # Reset for next forecast point
-            latitude = longitude = maxwind = valid_time = None
-            radii_34 = radii_50 = radii_64 = None
+    # Save the last forecast point after loop ends
+    if all([latitude, longitude, maxwind, valid_time]) and maxwind > 0:
+        forecast_points.append(
+            {
+                "atcf_id": storm_id,
+                "name": storm_name.upper(),
+                "basin": basin,
+                "valid_time": valid_time,
+                "latitude": latitude,
+                "longitude": longitude,
+                "wind_speed": maxwind,
+                "pressure": None,
+                "quadrant_radius_34": radii_34,
+                "quadrant_radius_50": radii_50,
+                "quadrant_radius_64": radii_64,
+            }
+        )
 
     logger.debug(
         f"Parsed {len(forecast_points)} forecast points for {storm_id}"
@@ -928,7 +940,7 @@ def _extract_current_observation(storm_dict: dict) -> dict:
     provider = _get_provider(basin)
 
     # Parse last update time
-    last_update = pd.Timestamp(storm_dict["lastUpdate"], tz="UTC")
+    last_update = pd.Timestamp(storm_dict["lastUpdate"])
 
     return {
         "atcf_id": atcf_id,
@@ -1070,12 +1082,7 @@ def _process_nhc_to_df(
                                 / 3600
                             )
                             point["leadtime"] = leadtime
-
-                            # Determine forecast type
-                            if leadtime > 120:  # > 5 days
-                                point["forecast_type"] = "outlook"
-                            else:
-                                point["forecast_type"] = "forecast"
+                            point["forecast_type"] = "forecast"
 
                         all_records.extend(forecast_points)
                         logger.debug(
