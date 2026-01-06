@@ -4,6 +4,15 @@ National Hurricane Center (NHC) Datasource Module.
 This module provides functions to download, load, and process tropical
 cyclone forecast and observation data from the National Hurricane Center
 (NHC) and Central Pacific Hurricane Center (CPHC).
+
+Important Notes
+---------------
+Basin Designation vs. Geographic Location:
+    The 'basin' field represents a storm's designation basin (where it
+    originated) from the ATCF ID, not its current geographic location.
+    Storms retain their original basin designation throughout their lifecycle,
+    even when crossing basin boundaries (e.g., Eastern Pacific storms crossing
+    140°W into the Central Pacific still have basin='EP').
 """
 
 import gzip
@@ -121,6 +130,8 @@ OFFICIAL_FORECAST_TECHS = [
 ]
 
 # Schema for storm metadata
+# Note: genesis_basin represents the storm's designation basin (where it originated)
+# and remains constant throughout the storm's lifecycle
 STORM_SCHEMA = pa.DataFrameSchema(
     {
         "atcf_id": pa.Column(str, nullable=False),
@@ -154,6 +165,10 @@ STORM_SCHEMA = pa.DataFrameSchema(
 )
 
 # Schema for track data
+# Note: basin represents the storm's designation basin (from ATCF ID) and is
+# constant for all track points. It does NOT represent the storm's current
+# geographic location. Storms that cross basin boundaries (e.g., EP→CP at 140°W)
+# retain their original basin designation throughout their lifecycle.
 TRACK_SCHEMA = pa.DataFrameSchema(
     {
         "atcf_id": pa.Column(str, nullable=False),
@@ -428,12 +443,22 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
     - TAU>0 represents forecast positions
     - Handles both compressed (.gz) and uncompressed files
     - Missing values in optional fields are handled gracefully
+    - Validates that ATCF ID in filename matches data
 
     Examples
     --------
     >>> df = _parse_atcf_adeck(Path("aal142023.dat.gz"))
     >>> df[['atcf_id', 'issued_time', 'valid_time', 'leadtime']]
     """
+    # Extract expected ATCF ID from filename (remove leading 'a' and extension)
+    # Filename format: aal012023.dat or aal012023.dat.gz
+    filename = (
+        file_path.stem
+        if file_path.suffix != ".gz"
+        else file_path.stem.replace(".dat", "")
+    )
+    atcf_id = filename[1:]
+
     # Determine if file is gzipped
     if file_path.suffix == ".gz":
         open_func = gzip.open
@@ -527,11 +552,24 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
     df["latitude"] = coords.apply(lambda x: x[0])
     df["longitude"] = coords.apply(lambda x: x[1])
 
-    # Create ATCF ID (basin + number + year)
+    df["atcf_id"] = atcf_id
+
+    # Validate ATCF ID from filename matches data
     year = df["yyyymmddhh"].astype(str).str[:4]
-    df["atcf_id"] = (
+    expected_ids = (
         df["basin"].str.lower() + df["cy"].astype(str).str.zfill(2) + year
     )
+    if expected_ids.unique()[0] != atcf_id:
+        logger.error(
+            f"ATCF ID mismatch in {file_path.name}: "
+            f"filename={atcf_id}, data={expected_ids.unique()[0]}. "
+            f"Skipping file."
+        )
+        return None
+    if len(expected_ids.unique()) > 1:
+        logger.warning(
+            f"Multiple ATCF IDs found in {file_path.name}: {expected_ids.unique()}"
+        )
 
     # Map basin to standard codes
     df["basin_std"] = df["basin"].str.lower().map(BASIN_CODE_MAPPING)
@@ -764,6 +802,23 @@ def _parse_forecast_advisory(
     """
     forecast_points = []
     lines = advisory_text.split("\n")
+
+    # Validate ATCF ID matches advisory text
+    # Look for pattern like "MIAMI FL       AL132023" in header
+    import re
+
+    atcf_pattern = r"MIAMI FL\s+([A-Z]{2}\d{6})"
+    for line in lines[:10]:  # Check first 10 lines only
+        match = re.search(atcf_pattern, line)
+        if match:
+            advisory_atcf_id = match.group(1).lower()
+            if advisory_atcf_id != storm_id.lower():
+                logger.error(
+                    f"ATCF ID mismatch: parameter={storm_id}, "
+                    f"advisory text={advisory_atcf_id}. Skipping advisory."
+                )
+                return []
+            break
 
     latitude = longitude = maxwind = valid_time = None
     radii_34 = radii_50 = radii_64 = None
@@ -1213,8 +1268,8 @@ def download_nhc_archive(
     Queries the FTP server to find all available storms for the specified
     year and basin, then downloads only those files.
 
-    Files are saved as: atcf_{basin}_{number}_{year}.dat in
-    the {cache_dir}/raw/atcf/ subdirectory.
+    Files are saved with archive naming: a{basin}{number}{year}.dat
+    (e.g., aal012023.dat) in the {cache_dir}/raw/atcf/ subdirectory.
 
     Files are automatically decompressed from .dat.gz to .dat format.
 
@@ -1222,8 +1277,11 @@ def download_nhc_archive(
     --------
     >>> # Download all Atlantic storms from 2023
     >>> paths = download_nhc_archive(2023, basin="AL")
+    >>> # Example cached file: aal012023.dat
+
     >>> # Download all Eastern Pacific storms from 2023
     >>> paths = download_nhc_archive(2023, basin="EP")
+    >>> # Example cached file: aep012023.dat
     """
     # Create cache directory
     cache_path = Path(cache_dir) / "raw" / "atcf"
@@ -1240,8 +1298,8 @@ def download_nhc_archive(
     basin_lower = basin.lower()
 
     for num in storm_numbers:
-        # Construct filename and URL
-        filename = f"atcf_{basin_lower}_{num:02d}_{year}.dat"
+        # Construct filename to match archive naming: aal012023.dat
+        filename = f"a{basin_lower}{num:02d}{year}.dat"
         file_path = cache_path / filename
 
         # Check cache

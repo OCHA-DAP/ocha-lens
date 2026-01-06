@@ -79,7 +79,7 @@ This function outputs a table containing one row per unique storm (identified by
 | `name` | `str` | Optional | - | Storm name, or None for unnamed systems |
 | `number` | `str` | **Required** | - | Storm number (e.g., "10") |
 | `season` | `int64` | **Required** | 2000-2050 range | Storm season year |
-| `genesis_basin` | `str` | **Required** | Must match basin mapping[^1] | Basin where storm originated |
+| `genesis_basin` | `str` | **Required** | Must match basin mapping[^1] | Storm's designation basin (where it originated)[^4] |
 | `provider` | `str` | Optional | - | NHC or CPHC |
 | `storm_id` | `str` | Optional | Part of unique constraint | Concatenation of `<name>_<basin>_<season>` (lowercase) |
 
@@ -95,7 +95,7 @@ This function outputs track data for all forecast points, including both observa
 | `point_id` | `str` | **Required** | - | Unique identifier (UUID) for this point |
 | `storm_id` | `str` | Optional | Part of unique constraint | Links to storm metadata |
 | `provider` | `str` | **Required** | - | NHC or CPHC |
-| `basin` | `str` | **Required** | Must match basin mapping[^1] | Current basin location |
+| `basin` | `str` | **Required** | Must match basin mapping[^1] | Storm's designation basin (from ATCF ID)[^4] |
 | `issued_time` | `pd.Timestamp` | **Required** | - | When the forecast/observation was issued |
 | `valid_time` | `pd.Timestamp` | **Required** | Part of unique constraint | Time this position is valid for |
 | `leadtime` | `Int64` | **Required** | ≥ 0, Part of unique constraint | Hours ahead of issue time (0 for observations) |
@@ -271,6 +271,31 @@ NHC/CPHC only covers three basins:
 
 For global coverage, use the IBTrACS or ECMWF modules.
 
+### Basin Designation vs Geographic Location
+
+**Important:** The `basin` field represents a storm's **designation basin** (where it originated), not its current geographic location. This is a fundamental aspect of the ATCF system.
+
+**Key Points:**
+- Storms retain their original basin designation throughout their lifecycle
+- The basin field comes from the ATCF ID and never changes
+- Storms that cross basin boundaries keep their original designation
+
+**Example:**
+Hurricane Gilma (2024) originated in the Eastern Pacific with ATCF ID `ep072024`. When it crossed 140°W into the Central Pacific on August 27, 2024:
+- Geographic location: Central Pacific (west of 140°W)
+- Forecast responsibility: Transferred from NHC to CPHC
+- `basin` field in data: Remained **"EP"** (Eastern Pacific)
+- ATCF ID: Remained `ep072024`
+
+This means all track points for Gilma have `basin='EP'`, even those west of 140°W. To determine actual geographic location, use the `longitude` field:
+- East of 140°W = Eastern Pacific geographic region
+- 140°W to 180°W = Central Pacific geographic region
+
+**Why This Matters:**
+- For filtering storms by origin: Use the `basin` field
+- For geographic analysis: Use `longitude` and `latitude` coordinates
+- For understanding forecast ownership: The designation basin indicates which agency "owns" the storm's data
+
 ### Forecast vs Best Track Data
 
 The NHC module provides **forecast data** (what NHC predicted at the time), not post-season best track data. For verified "ground truth" observations:
@@ -377,3 +402,5 @@ Files are automatically cached to avoid re-downloading. Set `use_cache=False` to
 [^2]: Forecast type classification: `observation` for current position (leadtime=0), `forecast` for standard forecasts (≤120h), `outlook` for extended forecasts (>120h).
 
 [^3]: Pressure is only available in observations (leadtime=0) for current API data. Archive data includes pressure for both observations and forecasts when available in the ATCF record.
+
+[^4]: The `basin` field represents the storm's designation basin from the ATCF ID, not its current geographic location. Storms that cross basin boundaries (e.g., Eastern Pacific storms crossing 140°W into Central Pacific) retain their original basin designation. See the "Basin Designation vs Geographic Location" section for details.
