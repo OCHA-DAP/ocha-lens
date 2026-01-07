@@ -53,3 +53,27 @@ forecasts.
 .. autofunction:: ocha_lens.ecmwf_storm.get_storms
 .. autofunction:: ocha_lens.ecmwf_storm.get_forecasts
 ```
+
+## NHC Tropical Cyclone Data Processing
+
+The `nhc` module provides utilities for downloading, loading, and processing National Hurricane Center (NHC) and Central Pacific Hurricane Center (CPHC) tropical cyclone forecast and observation data.
+
+### Data Loading
+
+```{eval-rst}
+.. autofunction:: ocha_lens.nhc.download_nhc
+.. autofunction:: ocha_lens.nhc.load_nhc
+.. autofunction:: ocha_lens.nhc.download_nhc_archive
+```
+
+### Track Data Extraction
+
+```{eval-rst}
+.. autofunction:: ocha_lens.nhc.get_tracks
+```
+
+### Storm Metadata
+
+```{eval-rst}
+.. autofunction:: ocha_lens.nhc.get_storms
+```
