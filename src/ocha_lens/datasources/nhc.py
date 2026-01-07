@@ -192,6 +192,17 @@ TRACK_SCHEMA = pa.DataFrameSchema(
         "pressure": pa.Column(
             float, pa.Check.between(800, 1100), nullable=True
         ),
+        "max_wind_radius": pa.Column("Int64", pa.Check.ge(0), nullable=True),
+        "last_closed_isobar_radius": pa.Column(
+            "Int64", pa.Check.ge(0), nullable=True
+        ),
+        "last_closed_isobar_pressure": pa.Column(
+            "Int64", pa.Check.between(800, 1100), nullable=True
+        ),
+        "gust_speed": pa.Column(
+            "Int64", pa.Check.between(0, 400), nullable=True
+        ),
+        "nature": pa.Column(str, nullable=True),
         "quadrant_radius_34": pa.Column(
             "object", checks=pa.Check(check_quadrant_list), nullable=True
         ),
@@ -499,6 +510,14 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
                 "forecast_type",
                 "wind_speed",
                 "pressure",
+                "max_wind_radius",
+                "last_closed_isobar_radius",
+                "last_closed_isobar_pressure",
+                "gust_speed",
+                "nature",
+                "quadrant_radius_34",
+                "quadrant_radius_50",
+                "quadrant_radius_64",
                 "latitude",
                 "longitude",
             ]
@@ -528,6 +547,14 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
                 "forecast_type",
                 "wind_speed",
                 "pressure",
+                "max_wind_radius",
+                "last_closed_isobar_radius",
+                "last_closed_isobar_pressure",
+                "gust_speed",
+                "nature",
+                "quadrant_radius_34",
+                "quadrant_radius_50",
+                "quadrant_radius_64",
                 "latitude",
                 "longitude",
             ]
@@ -603,15 +630,41 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
         lambda tau: "observation" if tau == 0 else "forecast"
     )
 
-    # Wind speed and pressure
+    # Wind speed and pressure (float columns - NaN is appropriate)
     df["wind_speed"] = pd.to_numeric(df["vmax"], errors="coerce")
     df["pressure"] = pd.to_numeric(df["mslp"], errors="coerce")
-    df.loc[df["pressure"] == 0, "pressure"] = None
-    df.loc[df["wind_speed"] == 0, "wind_speed"] = None
+    # ATCF uses 0 as missing value indicator - replace with NaN
+    df.loc[df["pressure"] == 0, "pressure"] = pd.NA
+    df.loc[df["wind_speed"] == 0, "wind_speed"] = pd.NA
 
-    # ATCF uses 0 as missing value indicator - convert to None
-    df.loc[df["pressure"] == 0, "pressure"] = None
-    df.loc[df["wind_speed"] == 0, "wind_speed"] = None
+    # Additional fields from ATCF to match IBTrACS schema
+    # These are Int64 columns - use pd.NA for consistency
+    df["max_wind_radius"] = pd.to_numeric(df["rmw"], errors="coerce").astype(
+        "Int64"
+    )
+    df.loc[df["max_wind_radius"] == 0, "max_wind_radius"] = pd.NA
+
+    df["last_closed_isobar_radius"] = pd.to_numeric(
+        df["router"], errors="coerce"
+    ).astype("Int64")
+    df.loc[
+        df["last_closed_isobar_radius"] == 0, "last_closed_isobar_radius"
+    ] = pd.NA
+
+    df["last_closed_isobar_pressure"] = pd.to_numeric(
+        df["pouter"], errors="coerce"
+    ).astype("Int64")
+    df.loc[
+        df["last_closed_isobar_pressure"] == 0, "last_closed_isobar_pressure"
+    ] = pd.NA
+
+    df["gust_speed"] = pd.to_numeric(df["gusts"], errors="coerce").astype(
+        "Int64"
+    )
+    df.loc[df["gust_speed"] == 0, "gust_speed"] = pd.NA
+
+    # Nature field (ty column) - storm type/classification (string column)
+    df["nature"] = df["ty"].replace(["", " "], pd.NA)
 
     # Leadtime
     df["leadtime"] = df["tau"].astype("int64")
@@ -704,6 +757,11 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
             "forecast_type",
             "wind_speed",
             "pressure",
+            "max_wind_radius",
+            "last_closed_isobar_radius",
+            "last_closed_isobar_pressure",
+            "gust_speed",
+            "nature",
             "quadrant_radius_34",
             "quadrant_radius_50",
             "quadrant_radius_64",
@@ -823,7 +881,7 @@ def _parse_forecast_advisory(
                 return []
             break
 
-    latitude = longitude = maxwind = valid_time = None
+    latitude = longitude = maxwind = valid_time = gust_speed = None
     radii_34 = radii_50 = radii_64 = None
 
     for ln in lines:
@@ -850,14 +908,21 @@ def _parse_forecast_advisory(
                         "latitude": latitude,
                         "longitude": longitude,
                         "wind_speed": maxwind,
-                        "pressure": None,
+                        "pressure": pd.NA,
+                        "max_wind_radius": pd.NA,  # Not in forecast advisory text
+                        "last_closed_isobar_radius": pd.NA,
+                        "last_closed_isobar_pressure": pd.NA,
+                        "gust_speed": gust_speed
+                        if gust_speed is not None
+                        else pd.NA,
+                        "nature": pd.NA,
                         "quadrant_radius_34": radii_34,
                         "quadrant_radius_50": radii_50,
                         "quadrant_radius_64": radii_64,
                     }
                 )
             # Reset for next forecast point
-            latitude = longitude = maxwind = valid_time = None
+            latitude = longitude = maxwind = valid_time = gust_speed = None
             radii_34 = radii_50 = radii_64 = None
 
             try:
@@ -885,10 +950,16 @@ def _parse_forecast_advisory(
                 latitude = longitude = valid_time = None
                 continue
 
-        # Parse MAX WIND lines
+        # Parse MAX WIND lines and optional GUSTS
+        # Example: "MAX WIND 115 KT GUSTS 140 KT"
         if ln.startswith("MAX WIND") and len(forecast_line) >= 3:
             try:
                 maxwind = int(forecast_line[2])
+                # Check for GUSTS on same line
+                if "GUSTS" in forecast_line:
+                    gusts_idx = forecast_line.index("GUSTS")
+                    if gusts_idx + 1 < len(forecast_line):
+                        gust_speed = int(forecast_line[gusts_idx + 1])
             except ValueError:
                 logger.debug(f"Could not parse wind from: {ln[:50]}")
                 maxwind = None
@@ -936,7 +1007,12 @@ def _parse_forecast_advisory(
                 "latitude": latitude,
                 "longitude": longitude,
                 "wind_speed": maxwind,
-                "pressure": None,
+                "pressure": pd.NA,
+                "max_wind_radius": pd.NA,  # Not in forecast advisory text
+                "last_closed_isobar_radius": pd.NA,
+                "last_closed_isobar_pressure": pd.NA,
+                "gust_speed": gust_speed if gust_speed is not None else pd.NA,
+                "nature": pd.NA,
                 "quadrant_radius_34": radii_34,
                 "quadrant_radius_50": radii_50,
                 "quadrant_radius_64": radii_64,
@@ -1016,9 +1092,14 @@ def _extract_current_observation(storm_dict: dict) -> dict:
         "wind_speed": float(storm_dict.get("intensity", 0)),
         "pressure": float(storm_dict.get("pressure", 0))
         if storm_dict.get("pressure")
-        else None,
+        else pd.NA,
         "latitude": float(storm_dict.get("latitudeNumeric", 0)),
         "longitude": float(storm_dict.get("longitudeNumeric", 0)),
+        "max_wind_radius": pd.NA,  # Not available in CurrentStorms.json
+        "last_closed_isobar_radius": pd.NA,
+        "last_closed_isobar_pressure": pd.NA,
+        "gust_speed": pd.NA,
+        "nature": pd.NA,
         "quadrant_radius_34": None,  # Not available in CurrentStorms.json
         "quadrant_radius_50": None,
         "quadrant_radius_64": None,
@@ -1178,6 +1259,14 @@ def _process_nhc_to_df(
                 "forecast_type",
                 "wind_speed",
                 "pressure",
+                "max_wind_radius",
+                "last_closed_isobar_radius",
+                "last_closed_isobar_pressure",
+                "gust_speed",
+                "nature",
+                "quadrant_radius_34",
+                "quadrant_radius_50",
+                "quadrant_radius_64",
                 "latitude",
                 "longitude",
             ]
