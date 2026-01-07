@@ -109,134 +109,6 @@ This function outputs track data for all forecast points, including both observa
 
 See the enforced schema in the [source code](https://github.com/OCHA-DAP/ocha-lens/blob/main/src/ocha_lens/datasources/nhc.py).
 
-## GIS Shapefiles (Cone of Uncertainty & Wind Radii)
-
-In addition to tabular forecast data, NHC provides GIS shapefiles for visualization and spatial analysis. These include the famous "cone of uncertainty" (forecast error cone), wind radii as polygons, storm surge predictions, and watch/warning areas.
-
-### Current Storms (Recommended Method)
-
-For **active storms**, use the JSON-based download which provides advisory-specific data:
-
-```python
-import ocha_lens as lens
-
-# Download all GIS products for all active storms
-gis_data = lens.nhc.get_current_storm_gis()
-
-# Download specific products for one storm
-gis_data = lens.nhc.get_current_storm_gis(
-    atcf_id="AL102023",
-    products=["cone", "wind_radii", "track"]
-)
-
-# Load the forecast cone
-cone = lens.nhc.load_nhc_gis(gis_data["AL102023"]["cone"])
-
-# Load wind radii polygons
-wind_radii = lens.nhc.load_nhc_gis(gis_data["AL102023"]["wind_radii"])
-```
-
-### Available GIS Products
-
-The `get_current_storm_gis()` function supports these products:
-
-| Product | Description | Geometry Type |
-|---------|-------------|---------------|
-| `cone` | Forecast error cone ("avocado") | Polygon |
-| `track` | Forecast track line | LineString |
-| `wind_radii` | Forecast wind extent (34/50/64kt) | Polygon |
-| `initial_wind` | Current wind extent | Polygon |
-| `wind_prob` | Wind speed probabilities (grid) | Point |
-| `surge_watch_warning` | Storm surge watches/warnings | Polygon |
-| `surge_flooding` | Potential surge flooding extent | Polygon |
-| `wind_watch_warning` | Wind watches/warnings | LineString |
-
-### Historical Storms (Archive)
-
-For **historical storms**, use the archive URL constructor:
-
-```python
-# Download historical GIS (if available, typically 2008+)
-path = lens.nhc.download_nhc_gis("AL102023", product="forecast")
-cone = lens.nhc.load_nhc_gis(path)
-```
-
-### Wind Radii: Tabular vs Spatial
-
-Wind radii are available in two complementary formats:
-
-**1. Tabular Format** (from track data):
-- Lists of radii by quadrant: `[NE, SE, SW, NW]` in nautical miles
-- Compact, suitable for statistics and verification
-- Available in both current API and archive modes
-
-```python
-tracks = lens.nhc.get_tracks(df)
-print(tracks[['valid_time', 'quadrant_radius_34', 'quadrant_radius_50', 'quadrant_radius_64']])
-
-# Example output:
-#   valid_time           quadrant_radius_34    quadrant_radius_50   quadrant_radius_64
-#   2023-08-30 00:00:00  [60, 50, 40, 50]      [40, 30, 25, 35]     [25, 20, 15, 20]
-```
-
-**2. Spatial Format** (from GIS shapefiles):
-- Actual polygon geometries showing wind extent
-- Ideal for spatial analysis, exposure assessment, visualization
-- Only available for current storms via GIS products
-
-```python
-# Load wind radii polygons
-gis_data = lens.nhc.get_current_storm_gis(products=["wind_radii"])
-wind_polys = lens.nhc.load_nhc_gis(gis_data["AL102023"]["wind_radii"])
-
-# Separate by wind threshold
-ts_winds = wind_polys[wind_polys.RADII == 34]  # Tropical storm force
-hurricane_winds = wind_polys[wind_polys.RADII == 64]  # Hurricane force
-
-# Spatial analysis
-cities = gpd.read_file("cities.shp")
-exposed = cities[cities.geometry.intersects(ts_winds.geometry.iloc[0])]
-```
-
-### Complete Workflow Example
-
-```python
-import ocha_lens as lens
-
-# Load tabular track data
-df = lens.nhc.load_nhc()
-tracks = lens.nhc.get_tracks(df)
-
-# Download GIS products for all active storms
-gis_data = lens.nhc.get_current_storm_gis()
-
-# For each storm, combine tabular and spatial data
-for storm_id, products in gis_data.items():
-    # Get track data
-    storm_tracks = tracks[tracks.atcf_id == storm_id]
-
-    # Load GIS products
-    cone = lens.nhc.load_nhc_gis(products["cone"])
-    wind_radii = lens.nhc.load_nhc_gis(products["wind_radii"])
-
-    # Spatial analysis
-    from shapely.geometry import Point
-    miami = Point(-80.19, 25.76)
-
-    print(f"Storm: {storm_id}")
-    print(f"  Miami in cone: {cone.contains(miami).any()}")
-    print(f"  Miami in TS winds: {wind_radii[wind_radii.RADII==34].contains(miami).any()}")
-```
-
-### GIS Product Schemas
-
-Each GIS product has a different schema (fields, geometry types). See the [**GIS Product Schemas documentation**](nhc_gis_schemas.md) for:
-- Detailed field descriptions for each product
-- Geometry types and CRS information
-- Use cases and analysis examples
-- Comparison of tabular vs spatial wind radii
-- Advisory-specific data alignment
-
 ## Usage Considerations
 
 ### Current API vs Archive Data
@@ -254,12 +126,6 @@ Each GIS product has a different schema (fields, geometry types). See the [**GIS
 - Standardized ATCF format (more reliable)
 - Complete historical record (1850-2024)
 - Includes all official NHC forecasts
-
-**GIS Data:**
-- Forecast cone and wind radii as polygon shapefiles
-- Only available for recent storms (typically 2008+)
-- Provides actual spatial geometries (not just radii values)
-- Includes watches, warnings, and other products
 
 ### Basin Coverage
 
@@ -369,24 +235,15 @@ cache_dir/
 │   │   ├── atcf_al_10_2023.dat         # Hurricane Idalia
 │   │   ├── atcf_ep_09_2023.dat         # Eastern Pacific storm 9
 │   │   └── atcf_cp_01_2024.dat         # Central Pacific storm 1
-│   └── gis/
-│       ├── al102023_cone_adv006.zip    # Forecast cone (Hurricane Idalia, adv 006)
-│       ├── al102023_track_adv006.zip   # Forecast track (Hurricane Idalia)
-│       ├── al102023_wind_radii_adv006.zip  # Wind radii (Hurricane Idalia)
-│       ├── al102023_forecast.zip       # Archive GIS (for historical)
-│       └── ep092024_cone_adv003.kmz    # KMZ format (Google Earth)
 ```
 
 Files are automatically cached to avoid re-downloading. Set `use_cache=False` to force fresh downloads.
-
-**Note:** GIS files from current storms include advisory numbers (e.g., `adv006`) to track forecast evolution. Archive GIS uses generic names.
 
 ## Additional Resources
 
 - [NHC Official Website](https://www.nhc.noaa.gov/)
 - [CPHC Official Website](https://www.prh.noaa.gov/cphc/)
 - [NHC Data Archive](https://www.nhc.noaa.gov/data/)
-- [NHC GIS Data](https://www.nhc.noaa.gov/gis/) - Shapefiles for cones, wind radii, watches/warnings
 - [How To Read The Forecast/Advisory](https://www.nhc.noaa.gov/help/tcm.shtml) - Official guide to NHC forecast terminology
 - [ATCF Archive (FTP)](https://ftp.nhc.noaa.gov/atcf/archive/)
 - [ATCF README](https://ftp.nhc.noaa.gov/atcf/README) - Official NHC ATCF format documentation
