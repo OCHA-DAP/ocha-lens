@@ -129,6 +129,13 @@ OFFICIAL_FORECAST_TECHS = [
     "HFIP",  # HFIP consensus (sometimes used as official)
 ]
 
+# Wind radii column names
+WIND_RADII_COLUMNS = [
+    "quadrant_radius_34",
+    "quadrant_radius_50",
+    "quadrant_radius_64",
+]
+
 # Schema for storm metadata
 # Note: genesis_basin represents the storm's designation basin (where it originated)
 # and remains constant throughout the storm's lifecycle
@@ -232,6 +239,23 @@ TRACK_SCHEMA = pa.DataFrameSchema(
         ),
     ],
 )
+
+
+# Derive base columns from TRACK_SCHEMA for raw data functions
+# Raw data has name, latitude, longitude instead of storm_id, point_id, geometry
+def _get_base_columns():
+    """Get column list for raw data (before get_tracks transformation)."""
+    cols = list(TRACK_SCHEMA.columns.keys())
+    # Remove columns added by get_tracks
+    for col in ["storm_id", "point_id", "geometry"]:
+        if col in cols:
+            cols.remove(col)
+    # Add columns used by raw data but removed by get_tracks
+    cols.extend(["name", "latitude", "longitude"])
+    return cols
+
+
+BASE_COLUMNS = _get_base_columns()
 
 
 # Helper Functions
@@ -491,30 +515,7 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
             )
     except Exception as e:
         logger.error(f"Failed to read ATCF file {file_path}: {e}")
-        return pd.DataFrame(
-            columns=[
-                "atcf_id",
-                "name",
-                "number",
-                "basin",
-                "provider",
-                "issued_time",
-                "valid_time",
-                "leadtime",
-                "wind_speed",
-                "pressure",
-                "max_wind_radius",
-                "last_closed_isobar_radius",
-                "last_closed_isobar_pressure",
-                "gust_speed",
-                "nature",
-                "quadrant_radius_34",
-                "quadrant_radius_50",
-                "quadrant_radius_64",
-                "latitude",
-                "longitude",
-            ]
-        )
+        return pd.DataFrame(columns=BASE_COLUMNS)
 
     logger.debug(f"Read {len(df)} records from {file_path}")
 
@@ -527,30 +528,7 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
             f"No official forecast data (OFCL) found in {file_path}. "
             f"Storm may not have had forecasts issued."
         )
-        return pd.DataFrame(
-            columns=[
-                "atcf_id",
-                "name",
-                "number",
-                "basin",
-                "provider",
-                "issued_time",
-                "valid_time",
-                "leadtime",
-                "wind_speed",
-                "pressure",
-                "max_wind_radius",
-                "last_closed_isobar_radius",
-                "last_closed_isobar_pressure",
-                "gust_speed",
-                "nature",
-                "quadrant_radius_34",
-                "quadrant_radius_50",
-                "quadrant_radius_64",
-                "latitude",
-                "longitude",
-            ]
-        )
+        return pd.DataFrame(columns=BASE_COLUMNS)
 
     logger.debug(f"Filtered to {len(df)} official forecast records")
 
@@ -626,29 +604,17 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
 
     # Additional fields from ATCF to match IBTrACS schema
     # These are Int64 columns - use pd.NA for consistency
-    df["max_wind_radius"] = pd.to_numeric(df["rmw"], errors="coerce").astype(
-        "Int64"
-    )
-    df.loc[df["max_wind_radius"] == 0, "max_wind_radius"] = pd.NA
-
-    df["last_closed_isobar_radius"] = pd.to_numeric(
-        df["router"], errors="coerce"
-    ).astype("Int64")
-    df.loc[
-        df["last_closed_isobar_radius"] == 0, "last_closed_isobar_radius"
-    ] = pd.NA
-
-    df["last_closed_isobar_pressure"] = pd.to_numeric(
-        df["pouter"], errors="coerce"
-    ).astype("Int64")
-    df.loc[
-        df["last_closed_isobar_pressure"] == 0, "last_closed_isobar_pressure"
-    ] = pd.NA
-
-    df["gust_speed"] = pd.to_numeric(df["gusts"], errors="coerce").astype(
-        "Int64"
-    )
-    df.loc[df["gust_speed"] == 0, "gust_speed"] = pd.NA
+    # Convert to Int64 and replace 0 with pd.NA (ATCF uses 0 for missing values)
+    for new_col, atcf_col in [
+        ("max_wind_radius", "rmw"),
+        ("last_closed_isobar_radius", "router"),
+        ("last_closed_isobar_pressure", "pouter"),
+        ("gust_speed", "gusts"),
+    ]:
+        df[new_col] = pd.to_numeric(df[atcf_col], errors="coerce").astype(
+            "Int64"
+        )
+        df.loc[df[new_col] == 0, new_col] = pd.NA
 
     # Nature field (ty column) - storm type/classification (string column)
     df["nature"] = df["ty"].replace(["", " "], pd.NA)
@@ -697,64 +663,31 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
             radii_list = None
 
         # Store in dictionary by wind threshold
-        if rad_val == 34:
-            radii_dict[key]["quadrant_radius_34"] = radii_list
-        elif rad_val == 50:
-            radii_dict[key]["quadrant_radius_50"] = radii_list
-        elif rad_val == 64:
-            radii_dict[key]["quadrant_radius_64"] = radii_list
+        radii_dict[key][f"quadrant_radius_{rad_val}"] = radii_list
 
     # Initialize wind radii columns with object dtype to hold lists
-    df["quadrant_radius_34"] = pd.Series([None] * len(df), dtype="object")
-    df["quadrant_radius_50"] = pd.Series([None] * len(df), dtype="object")
-    df["quadrant_radius_64"] = pd.Series([None] * len(df), dtype="object")
+    for col in WIND_RADII_COLUMNS:
+        df[col] = pd.Series([None] * len(df), dtype="object")
 
     # Merge radii back to main dataframe
     for key, radii in radii_dict.items():
         indices = df[df["forecast_key"] == key].index
-
         # Assign to each row individually to avoid pandas broadcasting issues
-        if "quadrant_radius_34" in radii:
-            for idx in indices:
-                df.at[idx, "quadrant_radius_34"] = radii["quadrant_radius_34"]
-        if "quadrant_radius_50" in radii:
-            for idx in indices:
-                df.at[idx, "quadrant_radius_50"] = radii["quadrant_radius_50"]
-        if "quadrant_radius_64" in radii:
-            for idx in indices:
-                df.at[idx, "quadrant_radius_64"] = radii["quadrant_radius_64"]
+        for radii_col in WIND_RADII_COLUMNS:
+            if radii_col in radii:
+                for idx in indices:
+                    df.at[idx, radii_col] = radii[radii_col]
 
-    # TODO: Figure out appropriate duplicate handling strategy
     # Remove duplicate rows after merging wind radii
-    # Drop only rows that are entirely identical across all columns
-    # This is more conservative - preserves rows that differ in any field
+    # Keep only one row per unique forecast (atcf_id + issued_time + tau)
     df = df.drop_duplicates(subset=["forecast_key"], keep="first")
 
     # Select and rename columns to match schema
-    result = df[
-        [
-            "atcf_id",
-            "name",
-            "number",
-            "basin_std",
-            "provider",
-            "issued_time",
-            "valid_time",
-            "leadtime",
-            "wind_speed",
-            "pressure",
-            "max_wind_radius",
-            "last_closed_isobar_radius",
-            "last_closed_isobar_pressure",
-            "gust_speed",
-            "nature",
-            "quadrant_radius_34",
-            "quadrant_radius_50",
-            "quadrant_radius_64",
-            "latitude",
-            "longitude",
-        ]
-    ].rename(columns={"basin_std": "basin"})
+    # Use BASE_COLUMNS but substitute basin_std for basin during selection
+    select_cols = [
+        col if col != "basin" else "basin_std" for col in BASE_COLUMNS
+    ]
+    result = df[select_cols].rename(columns={"basin_std": "basin"})
 
     # Drop rows with missing coordinates
     result = result.dropna(subset=["latitude", "longitude"])
@@ -1128,23 +1061,7 @@ def _process_nhc_to_df(
 
     if not active_storms:
         logger.info("No active storms currently")
-        # Return empty DataFrame with correct structure
-        return pd.DataFrame(
-            columns=[
-                "atcf_id",
-                "name",
-                "number",
-                "basin",
-                "provider",
-                "issued_time",
-                "valid_time",
-                "leadtime",
-                "wind_speed",
-                "pressure",
-                "latitude",
-                "longitude",
-            ]
-        )
+        return pd.DataFrame(columns=BASE_COLUMNS)
 
     logger.info(f"Processing {len(active_storms)} active storms")
 
@@ -1229,30 +1146,7 @@ def _process_nhc_to_df(
 
     if not all_records:
         logger.warning("No records extracted from active storms")
-        return pd.DataFrame(
-            columns=[
-                "atcf_id",
-                "name",
-                "number",
-                "basin",
-                "provider",
-                "issued_time",
-                "valid_time",
-                "leadtime",
-                "wind_speed",
-                "pressure",
-                "max_wind_radius",
-                "last_closed_isobar_radius",
-                "last_closed_isobar_pressure",
-                "gust_speed",
-                "nature",
-                "quadrant_radius_34",
-                "quadrant_radius_50",
-                "quadrant_radius_64",
-                "latitude",
-                "longitude",
-            ]
-        )
+        return pd.DataFrame(columns=BASE_COLUMNS)
 
     logger.info(f"Extracted {len(all_records)} total records")
     return pd.DataFrame(all_records)
