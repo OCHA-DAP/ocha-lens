@@ -98,8 +98,7 @@ This function outputs track data for all forecast points, including both observa
 | `basin` | `str` | **Required** | Must match basin mapping[^1] | Storm's designation basin (from ATCF ID)[^4] |
 | `issued_time` | `pd.Timestamp` | **Required** | - | When the forecast/observation was issued |
 | `valid_time` | `pd.Timestamp` | **Required** | Part of unique constraint | Time this position is valid for |
-| `leadtime` | `Int64` | **Required** | ≥ 0, Part of unique constraint | Hours ahead of issue time (0 for observations) |
-| `forecast_type` | `str` | **Required** | observation/forecast/outlook | Type of data point[^2] |
+| `leadtime` | `Int64` | **Required** | ≥ 0, Part of unique constraint | Hours ahead of issue time (0 for observations)[^2] |
 | `wind_speed` | `float` | Optional | 0-300 knots range | Maximum sustained winds |
 | `pressure` | `float` | Optional | 800-1100 hPa range | Central pressure[^3] |
 | `quadrant_radius_34` | `list` | Optional | List of 4 integers [NE, SE, SW, NW] | 34-knot wind radii by quadrant (nautical miles) |
@@ -310,11 +309,11 @@ Forecast data is valuable for:
 
 ### Lead Time Conventions
 
-- `leadtime = 0`: Analysis/observation (current position)
-- `leadtime = 12, 24, 36, 48, 72, 96, 120`: Standard forecast hours
-- `forecast_type = "observation"`: leadtime = 0
-- `forecast_type = "forecast"`: leadtime ≤ 120 hours (5 days)
-- `forecast_type = "outlook"`: leadtime > 120 hours
+The `leadtime` field indicates the hours ahead of the issue time for each track point:
+
+- **`leadtime = 0`**: Observations (current position) - filter with `tracks[tracks.leadtime == 0]`
+- **`leadtime > 0`**: Forecasts - filter with `tracks[tracks.leadtime > 0]`
+- **Standard forecast hours**: 12, 24, 36, 48, 72, 96, 120
 
 **Forecast vs Outlook:**
 
@@ -399,7 +398,7 @@ Files are automatically cached to avoid re-downloading. Set `use_cache=False` to
 
 [^1]: NHC basins are `NA` (North Atlantic, mapped from AL), `EP` (Eastern Pacific), and `CP` (Central Pacific). These codes are standardized to match IBTrACS and ECMWF conventions.
 
-[^2]: Forecast type classification: `observation` for current position (leadtime=0), `forecast` for standard forecasts (≤120h), `outlook` for extended forecasts (>120h).
+[^2]: Use `leadtime` to distinguish between observations and forecasts: `leadtime == 0` for current positions (observations), `leadtime > 0` for forecasts. Standard forecast intervals are 12, 24, 36, 48, 72, 96, and 120 hours.
 
 [^3]: Pressure is only available in observations (leadtime=0) for current API data. Archive data includes pressure for both observations and forecasts when available in the ATCF record.
 

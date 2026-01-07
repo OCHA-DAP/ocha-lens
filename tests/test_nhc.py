@@ -51,7 +51,7 @@ def test_adeck_margot():
     assert df_storms.name[0] == "MARGOT"
     assert len(df_tracks) == 479
     assert len(df_tracks.storm_id.unique()) == 1
-    assert len(df_tracks[df_tracks.forecast_type == "observation"]) == 41
+    assert len(df_tracks[df_tracks.leadtime == 0]) == 41
 
 
 def test_adeck_hilary():
@@ -64,7 +64,7 @@ def test_adeck_hilary():
     assert df_storms.name[0] == "HILARY"
     assert len(df_tracks) == 210
     assert len(df_tracks.storm_id.unique()) == 1
-    assert len(df_tracks[df_tracks.forecast_type == "observation"]) == 26
+    assert len(df_tracks[df_tracks.leadtime == 0]) == 26
 
 
 def test_adeck_incorrect_filename():

@@ -181,11 +181,6 @@ TRACK_SCHEMA = pa.DataFrameSchema(
         "issued_time": pa.Column(pd.Timestamp, nullable=False),
         "valid_time": pa.Column(pd.Timestamp, nullable=False),
         "leadtime": pa.Column("Int64", pa.Check.ge(0), nullable=False),
-        "forecast_type": pa.Column(
-            str,
-            pa.Check.isin(["observation", "forecast", "outlook"]),
-            nullable=False,
-        ),
         "wind_speed": pa.Column(
             float, pa.Check.between(0, 300), nullable=True
         ),
@@ -224,7 +219,6 @@ TRACK_SCHEMA = pa.DataFrameSchema(
     #     "valid_time",
     #     "leadtime",
     #     "issued_time",
-    #     "forecast_type",
     # ],
     # report_duplicates="all",
     checks=[
@@ -507,7 +501,6 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
                 "issued_time",
                 "valid_time",
                 "leadtime",
-                "forecast_type",
                 "wind_speed",
                 "pressure",
                 "max_wind_radius",
@@ -544,7 +537,6 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
                 "issued_time",
                 "valid_time",
                 "leadtime",
-                "forecast_type",
                 "wind_speed",
                 "pressure",
                 "max_wind_radius",
@@ -624,11 +616,6 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
         )
         # Forward-fill within storm if still missing
         df["name"] = df.groupby("atcf_id")["name"].ffill().bfill()
-
-    # Determine forecast type
-    df["forecast_type"] = df["tau"].apply(
-        lambda tau: "observation" if tau == 0 else "forecast"
-    )
 
     # Wind speed and pressure (float columns - NaN is appropriate)
     df["wind_speed"] = pd.to_numeric(df["vmax"], errors="coerce")
@@ -754,7 +741,6 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
             "issued_time",
             "valid_time",
             "leadtime",
-            "forecast_type",
             "wind_speed",
             "pressure",
             "max_wind_radius",
@@ -1088,7 +1074,6 @@ def _extract_current_observation(storm_dict: dict) -> dict:
         "issued_time": last_update,
         "valid_time": last_update,
         "leadtime": 0,
-        "forecast_type": "observation",
         "wind_speed": float(storm_dict.get("intensity", 0)),
         "pressure": float(storm_dict.get("pressure", 0))
         if storm_dict.get("pressure")
@@ -1154,7 +1139,6 @@ def _process_nhc_to_df(
                 "issued_time",
                 "valid_time",
                 "leadtime",
-                "forecast_type",
                 "wind_speed",
                 "pressure",
                 "latitude",
@@ -1227,7 +1211,6 @@ def _process_nhc_to_df(
                                 / 3600
                             )
                             point["leadtime"] = leadtime
-                            point["forecast_type"] = "forecast"
 
                         all_records.extend(forecast_points)
                         logger.debug(
@@ -1256,7 +1239,6 @@ def _process_nhc_to_df(
                 "issued_time",
                 "valid_time",
                 "leadtime",
-                "forecast_type",
                 "wind_speed",
                 "pressure",
                 "max_wind_radius",
@@ -2219,8 +2201,8 @@ def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
     >>> df = load_nhc()
     >>> tracks = get_tracks(df)
     >>> tracks.plot()  # Spatial plot of storm tracks
-    >>> tracks[tracks.forecast_type == 'observation']  # Current positions
-    >>> tracks[tracks.forecast_type == 'forecast']  # Forecast tracks
+    >>> tracks[tracks.leadtime == 0]  # Current positions (observations)
+    >>> tracks[tracks.leadtime > 0]  # Forecast tracks
     """
     if df.empty:
         logger.warning("Input DataFrame is empty")
