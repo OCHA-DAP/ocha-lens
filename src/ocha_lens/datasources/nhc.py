@@ -1343,6 +1343,12 @@ def download_nhc(
         logger.error("Failed to download NHC data")
         return None
 
+    # Check if there are active storms
+    active_storms = data.get("activeStorms", [])
+    if not active_storms:
+        logger.info("No active storms currently. Not saving file.")
+        return None
+
     # Save to file
     try:
         with open(file_path, "w") as f:
