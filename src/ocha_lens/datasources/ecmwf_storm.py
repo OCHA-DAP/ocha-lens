@@ -38,6 +38,19 @@ BASIN_MAPPING = {
 # Conversion factor from m/s to knots
 KTS_CONVERSION = 1.944
 
+UNIQUE_COLS = [
+    "forecast_id",
+    "valid_time",
+    "leadtime",
+    "issued_time",
+    "number",
+    "basin",
+    "pressure",
+    "wind_speed",
+    "storm_id",
+    "geometry",
+]
+
 STORM_SCHEMA = pa.DataFrameSchema(
     {
         "name": pa.Column(str, nullable=True),
@@ -78,18 +91,7 @@ TRACK_SCHEMA = pa.DataFrameSchema(
     },
     strict=True,
     coerce=True,
-    unique=[
-        "forecast_id",
-        "valid_time",
-        "leadtime",
-        "issued_time",
-        "number",
-        "basin",
-        "pressure",
-        "wind_speed",
-        "storm_id",
-        "geometry",
-    ],
+    unique=UNIQUE_COLS,
     checks=[
         pa.Check(
             lambda gdf: check_crs(gdf, "EPSG:4326"),
@@ -102,7 +104,12 @@ TRACK_SCHEMA = pa.DataFrameSchema(
         pa.Check(
             check_unique_when_storm_id_not_null,
             raise_warning=True,
-            error="Duplicate combination of storm_id, valid_time, leadtime found (excluding null storm_ids)",
+            error="""
+                Duplicate combination of storm_id, valid_time, leadtime found (excluding null storm_ids).
+                This likely means that there are duplicate forecasts, but with slightly different
+                position or intensity values for some points. These 'near duplicates' are maintained in the
+                output dataset. Use outputs with caution.
+                """,
         ),
     ],
 )
@@ -433,7 +440,26 @@ def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
     gdf_tracks = _to_gdf(df_tracks_dropped)
 
     assert len(gdf_tracks == len(df_))
-    return TRACK_SCHEMA.validate(gdf_tracks)
+    # Need to handle duplicates here. Some archival ECMWF forecasts
+    # have duplicates coming from the raw CXML files. Duplicates may
+    # be in the same source file, or as result of some forecasts being
+    # in incorrectly labelled files. We'll drop duplicates in cases where
+    # ALL timing, position, and intensity values are the same.
+    gdf_tracks_dropped = gdf_tracks.drop_duplicates(
+        subset=UNIQUE_COLS, keep="first"
+    )
+    duplicated = gdf_tracks[
+        gdf_tracks.duplicated(subset=UNIQUE_COLS, keep=False)
+    ]
+    diff = len(gdf_tracks) - len(gdf_tracks_dropped)
+    if diff > 0:
+        logger.warning(
+            f"Dropped {diff} duplicate tracks based on unique columns"
+        )
+        logger.warning(
+            f"Duplicated forecast IDs: {duplicated['forecast_id'].unique()}"
+        )
+    return TRACK_SCHEMA.validate(gdf_tracks_dropped)
 
 
 def _process_cxml_to_df(
