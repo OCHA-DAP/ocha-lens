@@ -144,7 +144,7 @@ STORM_SCHEMA = pa.DataFrameSchema(
         ),
         "number": pa.Column(str, nullable=False),
         "season": pa.Column(
-            "int64", pa.Check.between(2000, 2050), nullable=False
+            "int64", pa.Check.between(1840, 2050), nullable=False
         ),
         "genesis_basin": pa.Column(
             str,
