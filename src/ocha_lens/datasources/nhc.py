@@ -357,11 +357,11 @@ def _get_provider(atcf_id_or_basin: str) -> str:
     Returns
     -------
     str
-        Provider name ("NHC" or "CPHC")
+        Provider name ("nhc" or "cphc")
     """
     # Extract basin prefix (first 2 chars, lowercase)
     basin_prefix = atcf_id_or_basin[:2].lower()
-    return "CPHC" if basin_prefix == "cp" else "NHC"
+    return "cphc" if basin_prefix == "cp" else "nhc"
 
 
 def _parse_atcf_lat_lon(lat_str: str, lon_str: str) -> Tuple[float, float]:
