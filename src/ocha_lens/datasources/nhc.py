@@ -196,13 +196,13 @@ TRACK_SCHEMA = pa.DataFrameSchema(
     },
     strict=True,
     coerce=True,
-    # unique=[
-    #     "atcf_id",
-    #     "valid_time",
-    #     "leadtime",
-    #     "issued_time",
-    # ],
-    # report_duplicates="all",
+    unique=[
+        "atcf_id",
+        "valid_time",
+        "leadtime",
+        "issued_time",
+    ],
+    report_duplicates="all",
     checks=[
         pa.Check(
             lambda gdf: check_crs(gdf, "EPSG:4326"),
@@ -617,7 +617,16 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
 
     # Remove duplicate rows after merging wind radii
     # Keep only one row per unique forecast (atcf_id + issued_time + tau)
-    df = df.drop_duplicates(subset=["forecast_key"], keep="first")
+    df = df.drop_duplicates(
+        subset=[
+            "forecast_key",
+            "latitude",
+            "longitude",
+            "wind_speed",
+            "pressure",
+        ],
+        keep="first",
+    )
 
     # Select and rename columns to match schema
     # Use BASE_COLUMNS but substitute basin_std for basin during selection
