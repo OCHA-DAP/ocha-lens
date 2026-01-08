@@ -1,20 +1,3 @@
-"""
-National Hurricane Center (NHC) Datasource Module.
-
-This module provides functions to download, load, and process tropical
-cyclone forecast and observation data from the National Hurricane Center
-(NHC) and Central Pacific Hurricane Center (CPHC).
-
-Important Notes
----------------
-Basin Designation vs. Geographic Location:
-    The 'basin' field represents a storm's designation basin (where it
-    originated) from the ATCF ID, not its current geographic location.
-    Storms retain their original basin designation throughout their lifecycle,
-    even when crossing basin boundaries (e.g., Eastern Pacific storms crossing
-    140°W into the Central Pacific still have basin='EP').
-"""
-
 import gzip
 import io
 import json
@@ -46,10 +29,13 @@ from ocha_lens.utils.storm import (
 logger = logging.getLogger(__name__)
 
 # Basin code mapping from ATCF to standard codes
+# Note: IBTrACS and ECMWF use "EP" for the entire Eastern North Pacific
+# (east of 180°W), which includes both NHC (east of 140°W) and CPHC
+# (140°W-180°W) areas of responsibility
 BASIN_CODE_MAPPING = {
-    "al": "NA",  # Atlantic → North Atlantic (matches ECMWF/IBTrACS)
-    "ep": "EP",  # Eastern Pacific
-    "cp": "CP",  # Central Pacific (CPHC jurisdiction)
+    "al": "NA",  # Atlantic → North Atlantic
+    "ep": "EP",  # Eastern Pacific (NHC area: east of 140°W)
+    "cp": "EP",  # Central Pacific (CPHC area: 140°W-180°W) → mapped to EP for standardization
 }
 
 # NHC API URL
@@ -161,10 +147,10 @@ STORM_SCHEMA = pa.DataFrameSchema(
 )
 
 # Schema for track data
-# Note: basin represents the storm's designation basin (from ATCF ID) and is
+# Note: basin represents the storm's standardized designation basin and is
 # constant for all track points. It does NOT represent the storm's current
-# geographic location. Storms that cross basin boundaries (e.g., EP→CP at 140°W)
-# retain their original basin designation throughout their lifecycle.
+# geographic location. Both NHC (east of 140°W) and CPHC (140°W-180°W) areas
+# are coded as "EP" to match IBTrACS/ECMWF standardization.
 TRACK_SCHEMA = pa.DataFrameSchema(
     {
         "atcf_id": pa.Column(str, nullable=False),
@@ -259,13 +245,6 @@ def _fetch_storm_names() -> dict:
     dict
         Mapping of ATCF ID (uppercase) to storm name
         Example: {'AL132023': 'LEE', 'EP092023': 'HILARY'}
-
-    Notes
-    -----
-    Downloads and parses the official NHC storm.table file which contains
-    the authoritative mapping of storm IDs to names. This is more reliable
-    than extracting names from ATCF A-deck files where OFCL forecasts don't
-    include storm names.
     """
     try:
         response = requests.get(NHC_STORM_TABLE_URL, timeout=30)
@@ -310,14 +289,7 @@ def _get_basin_code(atcf_id: str) -> str:
     Returns
     -------
     str
-        Standard basin code (NA, EP, or CP)
-
-    Examples
-    --------
-    >>> _get_basin_code("EP092023")
-    'EP'
-    >>> _get_basin_code("AL142024")
-    'NA'
+        Standard basin code (NA or EP)
     """
     basin_prefix = atcf_id[:2].lower()
     return BASIN_CODE_MAPPING.get(basin_prefix, basin_prefix.upper())
@@ -341,11 +313,6 @@ def _parse_valid_time(valid_time_str: str, issuance: str) -> pd.Timestamp:
     -------
     pd.Timestamp
         UTC timestamp for the valid time
-
-    Examples
-    --------
-    >>> _parse_valid_time("29/1200Z", "2023-08-28T18:00:00Z")
-    Timestamp('2023-08-29 12:00:00+0000', tz='UTC')
     """
     # Parse issuance time
     issuance_dt = dateparser.parse(issuance)
@@ -378,21 +345,23 @@ def _parse_valid_time(valid_time_str: str, issuance: str) -> pd.Timestamp:
     return pd.Timestamp(forecast_dt)
 
 
-def _get_provider(basin: str) -> str:
+def _get_provider(atcf_id_or_basin: str) -> str:
     """
-    Determine the provider (NHC or CPHC) based on basin.
+    Determine the provider (NHC or CPHC) based on ATCF ID or basin prefix.
 
     Parameters
     ----------
-    basin : str
-        Basin code (NA, EP, or CP)
+    atcf_id_or_basin : str
+        ATCF ID (e.g., "CP012024") or basin prefix (e.g., "cp")
 
     Returns
     -------
     str
         Provider name ("NHC" or "CPHC")
     """
-    return "CPHC" if basin == "CP" else "NHC"
+    # Extract basin prefix (first 2 chars, lowercase)
+    basin_prefix = atcf_id_or_basin[:2].lower()
+    return "CPHC" if basin_prefix == "cp" else "NHC"
 
 
 def _parse_atcf_lat_lon(lat_str: str, lon_str: str) -> Tuple[float, float]:
@@ -413,13 +382,6 @@ def _parse_atcf_lat_lon(lat_str: str, lon_str: str) -> Tuple[float, float]:
     -------
     tuple of (float, float)
         Latitude and longitude in decimal degrees
-
-    Examples
-    --------
-    >>> _parse_atcf_lat_lon("253N", "755W")
-    (25.3, -75.5)
-    >>> _parse_atcf_lat_lon("185S", "1234E")
-    (-18.5, 123.4)
     """
     # Parse latitude
     lat_value = float(lat_str[:-1]) / 10.0
@@ -453,20 +415,6 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
     -------
     pd.DataFrame
         Standardized DataFrame with NHC schema fields
-
-    Notes
-    -----
-    - Filters for TECH in OFFICIAL_FORECAST_TECHS (primarily OFCL)
-    - TAU=0 represents analysis (current position)
-    - TAU>0 represents forecast positions
-    - Handles both compressed (.gz) and uncompressed files
-    - Missing values in optional fields are handled gracefully
-    - Validates that ATCF ID in filename matches data
-
-    Examples
-    --------
-    >>> df = _parse_atcf_adeck(Path("aal142023.dat.gz"))
-    >>> df[['atcf_id', 'issued_time', 'valid_time', 'leadtime']]
     """
     # Extract expected ATCF ID from filename (remove leading 'a' and extension)
     # Filename format: aal012023.dat or aal012023.dat.gz
@@ -563,8 +511,8 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
     # Map basin to standard codes
     df["basin_std"] = df["basin"].str.lower().map(BASIN_CODE_MAPPING)
 
-    # Get provider
-    df["provider"] = df["basin_std"].apply(_get_provider)
+    # Get provider based on original basin prefix (before standardization)
+    df["provider"] = df["basin"].apply(_get_provider)
 
     # Extract storm number
     df["number"] = df["cy"].astype(str).str.zfill(2)
@@ -701,11 +649,6 @@ def _fetch_forecast_advisory(url: str) -> Optional[str]:
     -------
     str or None
         Extracted text content from <pre> tag, or None if fetch fails
-
-    Notes
-    -----
-    Uses a 10-second connection timeout and 30-second read timeout.
-    Returns None on any HTTP or parsing errors.
     """
     try:
         response = requests.get(url, timeout=(10, 30))
@@ -757,17 +700,12 @@ def _parse_forecast_advisory(
     issuance : str
         Issuance timestamp of advisory
     basin : str
-        Basin code (NA, EP, or CP)
+        Basin code (NA or EP)
 
     Returns
     -------
     list of dict
         Forecast points with valid_time, latitude, longitude, wind_speed
-
-    Notes
-    -----
-    Only includes forecast points where all three values (lat, lon, wind)
-    are successfully parsed and wind speed > 0.
     """
     forecast_points = []
     lines = advisory_text.split("\n")
@@ -971,18 +909,13 @@ def _extract_current_observation(storm_dict: dict) -> dict:
     -------
     dict
         Observation record with standardized fields
-
-    Notes
-    -----
-    The current observation includes both wind and pressure data,
-    unlike forecasts which only have wind.
     """
     # Uppercase basin code to match IBTrACS format (AL012023 not al012023)
     atcf_id_raw = storm_dict["id"]
     atcf_id = atcf_id_raw[:2].upper() + atcf_id_raw[2:]
 
     basin = _get_basin_code(atcf_id)
-    provider = _get_provider(basin)
+    provider = _get_provider(atcf_id)
 
     # Parse last update time
     last_update = pd.Timestamp(storm_dict["lastUpdate"])
@@ -1022,7 +955,8 @@ def _process_nhc_to_df(
     Process raw NHC JSON data to DataFrame.
 
     Extracts current observations and fetches/parses forecast advisories
-    for each active storm.
+    for each active storm. If no active storms or all fetches fail,
+    returns an empty DataFrame.
 
     Parameters
     ----------
@@ -1037,11 +971,6 @@ def _process_nhc_to_df(
     -------
     pd.DataFrame
         Combined DataFrame with observations and/or forecasts
-
-    Notes
-    -----
-    If no active storms or all fetches fail, returns an empty DataFrame
-    with the correct column structure.
     """
     all_records = []
 
@@ -1101,7 +1030,7 @@ def _process_nhc_to_df(
                         )
 
                         # Add metadata and leadtime to forecast points
-                        provider = _get_provider(basin)
+                        provider = _get_provider(atcf_id)
                         issued_time = pd.Timestamp(issuance, tz="UTC")
 
                         for point in forecast_points:
@@ -1159,11 +1088,6 @@ def _list_available_atcf_files(year: int, basin: str) -> List[int]:
     -------
     list of int
         Storm numbers that have available files
-
-    Raises
-    ------
-    Exception
-        If FTP connection or directory listing fails
     """
     import re
     from ftplib import FTP
@@ -1208,6 +1132,10 @@ def download_nhc_archive(
 ) -> List[Path]:
     """
     Download ATCF archive files for all storms in a given year and basin.
+    Queries the FTP server to find all available storms for the specified
+    year and basin, then downloads only those files. Files are saved
+    with archive naming: a{basin}{number}{year}.dat
+    (e.g., aal012023.dat) in the {cache_dir}/raw/atcf/ subdirectory.
 
     Parameters
     ----------
@@ -1225,26 +1153,6 @@ def download_nhc_archive(
     -------
     list of Path
         Paths to downloaded ATCF files
-
-    Notes
-    -----
-    Queries the FTP server to find all available storms for the specified
-    year and basin, then downloads only those files.
-
-    Files are saved with archive naming: a{basin}{number}{year}.dat
-    (e.g., aal012023.dat) in the {cache_dir}/raw/atcf/ subdirectory.
-
-    Files are automatically decompressed from .dat.gz to .dat format.
-
-    Examples
-    --------
-    >>> # Download all Atlantic storms from 2023
-    >>> paths = download_nhc_archive(2023, basin="AL")
-    >>> # Example cached file: aal012023.dat
-
-    >>> # Download all Eastern Pacific storms from 2023
-    >>> paths = download_nhc_archive(2023, basin="EP")
-    >>> # Example cached file: aep012023.dat
     """
     # Create cache directory
     cache_path = Path(cache_dir) / "raw" / "atcf"
@@ -1338,11 +1246,6 @@ def _load_nhc_archive(
     -------
     pd.DataFrame or None
         Combined DataFrame with all storm data, or None if no data
-
-    Notes
-    -----
-    This function handles multiple storms by concatenating their data
-    into a single DataFrame.
     """
     # Download ATCF files
     logger.info(f"Loading archive data for {basin} basin, year {year}")
@@ -1401,16 +1304,6 @@ def download_nhc(
     -------
     Path or None
         Path to downloaded JSON file, None if download failed
-
-    Notes
-    -----
-    Files are saved with timestamp: nhc_{YYYYMMDD}_{HHMM}.json
-    in the {cache_dir}/raw/ subdirectory.
-
-    Examples
-    --------
-    >>> path = download_nhc()
-    >>> path = download_nhc(cache_dir="data/storms", use_cache=True)
     """
     # Create cache directory
     cache_path = Path(cache_dir) / "raw"
@@ -1486,34 +1379,6 @@ def load_nhc(
     pd.DataFrame or None
         DataFrame with combined observations and forecasts, or None if
         loading fails
-
-    Notes
-    -----
-    **Current Mode:**
-    - Returns current observations (leadtime=0) and forecast points
-    - Pressure is only available for observations, not forecasts
-    - Fetches from https://www.nhc.noaa.gov/CurrentStorms.json
-
-    **Archive Mode:**
-    - Returns historical forecast data from ATCF archive
-    - Coverage: 1850-2024
-    - Includes official NHC forecasts (OFCL) only
-    - Pressure available for both observations and forecasts
-
-    Examples
-    --------
-    >>> # Current storms
-    >>> df = load_nhc()
-    >>> df = load_nhc(file_path="storm/raw/nhc_20231225_1200.json")
-
-    >>> # Archive mode: All storms from all basins in 2023
-    >>> df = load_nhc(year=2023)
-
-    >>> # Archive mode: All Atlantic storms from 2023
-    >>> df = load_nhc(year=2023, basin="AL")
-
-    >>> # Eastern Pacific storms
-    >>> df = load_nhc(year=2024, basin="EP")
     """
     # Archive mode: year is specified
     if year is not None:
@@ -1598,18 +1463,6 @@ def get_storms(df: pd.DataFrame) -> pd.DataFrame:
     -------
     pd.DataFrame
         Storm metadata with schema validation applied
-
-    Notes
-    -----
-    The storm_id field is created from name, basin, and season using
-    the format "{name}_{basin}_{season}" (lowercase). Unnamed storms
-    will have storm_id set to None.
-
-    Examples
-    --------
-    >>> df = load_nhc()
-    >>> storms = get_storms(df)
-    >>> storms[['atcf_id', 'name', 'genesis_basin', 'season']]
     """
     if df.empty:
         logger.warning("Input DataFrame is empty")
@@ -1662,23 +1515,6 @@ def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
     Returns
     -------
     gpd.GeoDataFrame
-        Track data with Point geometry and schema validation applied
-
-    Notes
-    -----
-    - Each point is assigned a unique UUID in the point_id field
-    - Longitude is normalized to [-180, 180] range
-    - Geometry is created in EPSG:4326 (WGS84)
-    - Pressure field will be None for forecast points
-    - The storm_id field links to the storms table
-
-    Examples
-    --------
-    >>> df = load_nhc()
-    >>> tracks = get_tracks(df)
-    >>> tracks.plot()  # Spatial plot of storm tracks
-    >>> tracks[tracks.leadtime == 0]  # Current positions (observations)
-    >>> tracks[tracks.leadtime > 0]  # Forecast tracks
     """
     if df.empty:
         logger.warning("Input DataFrame is empty")

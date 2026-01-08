@@ -87,10 +87,12 @@ See the enforced schema in the [source code](https://github.com/OCHA-DAP/ocha-le
 
 ### Incomplete basin coverage
 
-NHC/CPHC only covers three basins:
-- **AL** (Atlantic / North Atlantic) - NHC responsibility
-- **EP** (Eastern Pacific) - NHC responsibility
-- **CP** (Central Pacific) - CPHC responsibility
+NHC/CPHC only covers three geographic areas in the ATCF system:
+- **AL** (Atlantic / North Atlantic) - NHC responsibility, standardized to **NA** basin
+- **EP** (Eastern Pacific, east of 140°W) - NHC responsibility, standardized to **EP** basin
+- **CP** (Central Pacific, 140°W-180°W) - CPHC responsibility, standardized to **EP** basin
+
+The standardized basin codes (NA, EP) match IBTrACS and ECMWF conventions. The `provider` field distinguishes between NHC and CPHC responsibility areas.
 
 For global coverage, use the IBTrACS or ECMWF modules.
 
@@ -138,7 +140,7 @@ all_systems = df_storms
 - [HURDAT2 Best Track Data](https://www.nhc.noaa.gov/data/hurdat/)
 - [Current Storms JSON API](https://www.nhc.noaa.gov/CurrentStorms.json)
 
-[^1]: NHC basins are `NA` (North Atlantic, mapped from AL), `EP` (Eastern Pacific), and `CP` (Central Pacific). These codes are standardized to match IBTrACS and ECMWF conventions.
+[^1]: NHC standardized basins are `NA` (North Atlantic, from ATCF code AL) and `EP` (Eastern North Pacific, from ATCF codes EP and CP). The ATCF Central Pacific (CP) area is mapped to EP basin to match IBTrACS and ECMWF conventions. Use the `provider` field to distinguish between NHC (east of 140°W) and CPHC (140°W-180°W) responsibility areas.
 
 [^2]: Use `leadtime` to distinguish between observations and forecasts: `leadtime == 0` for current positions (observations), `leadtime > 0` for forecasts. Standard forecast intervals are 12, 24, 36, 48, 72, 96, and 120 hours.
 
