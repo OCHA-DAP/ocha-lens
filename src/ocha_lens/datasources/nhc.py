@@ -500,12 +500,12 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
         df["basin"].str.upper() + df["cy"].astype(str).str.zfill(2) + year
     )
     # Normalize both IDs by removing punctuation for comparison
-    expected_id_normalized = expected_ids.unique()[0].replace(".", "")
-    atcf_id_normalized = atcf_id.replace(".", "")
-    if expected_id_normalized != atcf_id_normalized:
+    # .replace(".0") is to force equivalence of 'EP10.02012' and 'EP102012'
+    expected_id_normalized = expected_ids.unique()[0].replace(".0", "")
+    if expected_id_normalized != atcf_id:
         logger.error(
             f"ATCF ID mismatch in {file_path.name}: "
-            f"filename={atcf_id}, data={expected_ids.unique()[0]}. "
+            f"filename={atcf_id}, data={expected_id_normalized}. "
             f"Skipping file."
         )
         return None
