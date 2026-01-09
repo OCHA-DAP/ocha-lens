@@ -201,6 +201,10 @@ TRACK_SCHEMA = pa.DataFrameSchema(
         "valid_time",
         "leadtime",
         "issued_time",
+        "latitude",
+        "longitude",
+        "wind_speed",
+        "pressure",
     ],
     report_duplicates="all",
     checks=[
