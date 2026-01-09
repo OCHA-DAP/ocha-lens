@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -500,7 +499,10 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
     expected_ids = (
         df["basin"].str.upper() + df["cy"].astype(str).str.zfill(2) + year
     )
-    if expected_ids.unique()[0] != atcf_id:
+    # Normalize both IDs by removing punctuation for comparison
+    expected_id_normalized = expected_ids.unique()[0].replace(".", "")
+    atcf_id_normalized = atcf_id.replace(".", "")
+    if expected_id_normalized != atcf_id_normalized:
         logger.error(
             f"ATCF ID mismatch in {file_path.name}: "
             f"filename={atcf_id}, data={expected_ids.unique()[0]}. "
@@ -1304,37 +1306,31 @@ def download_nhc(
     Download current NHC storm data in JSON format.
 
     Fetches active storm data from the National Hurricane Center's
-    CurrentStorms.json API and saves to local cache directory.
+    CurrentStorms.json API and saves to local cache directory. Files are
+    named using the latest forecast issuance time.
 
     Parameters
     ----------
     cache_dir : str, default "storm"
         Directory to store raw JSON files
     use_cache : bool, default False
-        Whether to use existing cached file if available from today
+        Whether to use existing cached file if available
 
     Returns
     -------
     Path or None
-        Path to downloaded JSON file, None if download failed
+        Path to downloaded JSON file, None if download failed or no active storms
     """
     # Create cache directory
     cache_path = Path(cache_dir) / "raw"
     os.makedirs(cache_path, exist_ok=True)
 
-    # Generate filename with current timestamp
-    now = datetime.utcnow()
-    filename = f"nhc_{now.strftime('%Y%m%d_%H%M')}.json"
-    file_path = cache_path / filename
-
-    # Check if we should use cache
+    # Check if we should use an existing cached file
     if use_cache:
-        # Look for any file from today
-        today_pattern = f"nhc_{now.strftime('%Y%m%d')}_*.json"
-        existing_files = list(cache_path.glob(today_pattern))
-
+        # Look for any existing file
+        existing_files = list(cache_path.glob("nhc_*.json"))
         if existing_files:
-            # Use the most recent file from today
+            # Use the most recent file
             latest_file = max(existing_files, key=lambda p: p.stat().st_mtime)
             logger.info(f"Using cached file: {latest_file}")
             return latest_file
@@ -1353,7 +1349,18 @@ def download_nhc(
         logger.info("No active storms currently. Not saving file.")
         return None
 
-    # Save to file
+    # Extract latest issuance time from all active storms
+    latest_issuance = None
+    for storm in active_storms:
+        issuance_str = storm.get("lastUpdate")
+        issuance_dt = pd.Timestamp(issuance_str, tz="UTC")
+        if latest_issuance is None or issuance_dt > latest_issuance:
+            latest_issuance = issuance_dt
+    # Use latest issuance for filename, or fall back to current time
+    filename = f"nhc_{latest_issuance.strftime('%Y%m%d_%H%M')}.json"
+    file_path = cache_path / filename
+
+    # Save to file (overwrite if exists)
     try:
         with open(file_path, "w") as f:
             json.dump(data, f, indent=2)
