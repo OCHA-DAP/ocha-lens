@@ -55,7 +55,7 @@ This function outputs a table containing one row per unique storm (identified by
 | `season` | `int64` | **Required** | 1840-2050 range | Storm season year |
 | `genesis_basin` | `str` | **Required** | Must match basin mapping[^1] | Storm's designation basin (where it originated)[^4] |
 | `provider` | `str` | Optional | - | NHC or CPHC |
-| `storm_id` | `str` | Optional | Part of unique constraint | Concatenation of `<name>_<basin>_<season>` (lowercase) |
+| `storm_id` | `str` | Optional | Part of unique constraint | Concatenation of `<name>_<basin>_<season>` (lowercase) [^5]|
 
 See the enforced schema in the [source code](https://github.com/OCHA-DAP/ocha-lens/blob/main/src/ocha_lens/datasources/nhc.py).
 
@@ -147,3 +147,5 @@ all_systems = df_storms
 [^3]: Pressure is only available in observations (leadtime=0) for current API data. Archive data includes pressure for both observations and forecasts when available in the ATCF record.
 
 [^4]: The `basin` field represents the storm's designation basin from the ATCF ID, not its current geographic location. Storms that cross basin boundaries (e.g., Eastern Pacific storms crossing 140°W into Central Pacific) retain their original basin designation.
+
+[^5]: The `storm_id` may *not* be unique across all storms (see `two_ep_2006`, for example). This is because we have standardized the Central Pacific (CP) and Eastern Pacific (EP) basins in the dataset into just "EP", for consistency with IBTrACS. The `atcf_id` field should be taken as the unique storm identifier for NHC data.
