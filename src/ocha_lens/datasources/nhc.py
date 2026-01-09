@@ -49,6 +49,12 @@ ATCF_ARCHIVE_URL = (
     "a{basin}{number:02d}{year}.dat.gz"
 )
 
+# ATCF aid_public URL pattern (for current/recent years)
+ATCF_AID_PUBLIC_URL = (
+    "https://ftp.nhc.noaa.gov/atcf/aid_public/"
+    "a{basin}{number:02d}{year}.dat.gz"
+)
+
 # ATCF A-deck column names (first 35 standard columns)
 # Format documentation: https://ftp.nhc.noaa.gov/atcf/README
 # See also: https://github.com/palewire/atcf-data-parser
@@ -1092,6 +1098,9 @@ def _list_available_atcf_files(year: int, basin: str) -> List[int]:
     """
     List available ATCF A-deck files for a given year and basin.
 
+    For recent years (current year and previous year), checks aid_public
+    directory first. Falls back to archive directory for older years.
+
     Parameters
     ----------
     year : int
@@ -1105,11 +1114,21 @@ def _list_available_atcf_files(year: int, basin: str) -> List[int]:
         Storm numbers that have available files
     """
     import re
+    from datetime import datetime
     from ftplib import FTP
 
     basin_lower = basin.lower()
     ftp_host = "ftp.nhc.noaa.gov"
-    ftp_path = f"/atcf/archive/{year}/"
+
+    # For current/recent years (current year + previous year), check aid_public first
+    # This handles cases where previous year's data hasn't been archived yet
+    current_year = datetime.utcnow().year
+    if year >= current_year - 1:
+        ftp_path = "/atcf/aid_public/"
+        source = "aid_public"
+    else:
+        ftp_path = f"/atcf/archive/{year}/"
+        source = "archive"
 
     # Connect to FTP server
     with FTP(ftp_host, timeout=30) as ftp:
@@ -1132,7 +1151,7 @@ def _list_available_atcf_files(year: int, basin: str) -> List[int]:
         storm_numbers = sorted(set(storm_numbers))
 
         logger.info(
-            f"Found {len(storm_numbers)} {basin} storms in {year} archive: "
+            f"Found {len(storm_numbers)} {basin} storms in {year} ({source}): "
             f"{storm_numbers if len(storm_numbers) <= 10 else f'{storm_numbers[:10]}...'}"
         )
 
@@ -1152,10 +1171,14 @@ def download_nhc_archive(
     with archive naming: a{basin}{number}{year}.dat
     (e.g., aal012023.dat) in the {cache_dir}/raw/atcf/ subdirectory.
 
+    For recent years (current year and previous year), files are downloaded
+    from the aid_public directory. For older years, files are downloaded
+    from the archive directory.
+
     Parameters
     ----------
     year : int
-        Year to download (e.g., 2023, 2024)
+        Year to download (e.g., 2023, 2024, 2025)
     basin : str, default "AL"
         Basin code: "AL" (Atlantic), "EP" (Eastern Pacific),
         or "CP" (Central Pacific)
@@ -1183,6 +1206,16 @@ def download_nhc_archive(
     downloaded_files = []
     basin_lower = basin.lower()
 
+    # Determine which URL to use based on year
+    # Use aid_public for current year + previous year (recent data not yet archived)
+    from datetime import datetime
+
+    current_year = datetime.utcnow().year
+    if year >= current_year - 1:
+        url_template = ATCF_AID_PUBLIC_URL
+    else:
+        url_template = ATCF_ARCHIVE_URL
+
     for num in storm_numbers:
         # Construct filename to match archive naming: aal012023.dat
         filename = f"a{basin_lower}{num:02d}{year}.dat"
@@ -1195,7 +1228,7 @@ def download_nhc_archive(
             continue
 
         # Construct download URL
-        url = ATCF_ARCHIVE_URL.format(year=year, basin=basin_lower, number=num)
+        url = url_template.format(year=year, basin=basin_lower, number=num)
 
         logger.debug(f"Downloading from {url}")
 
