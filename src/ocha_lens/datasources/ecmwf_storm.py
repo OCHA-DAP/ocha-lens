@@ -501,7 +501,9 @@ def _process_cxml_to_df(
         elif stage == "dev" or stage == "prod":
             # Remove the first directory level since this is the container
             container, path = str(cxml_path).split("/", 1)
-            cxml_data = stratus.load_blob_data(path, container_name=container)
+            cxml_data = stratus.load_blob_data(
+                path, container_name=container, stage=stage
+            )
             xml = et.parse(io.BytesIO(cxml_data))
         else:
             logger.error(f"Invalid stage: {stage}")
