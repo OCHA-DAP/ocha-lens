@@ -126,6 +126,10 @@ named_storms = df_storms[df_storms.storm_id.notna()]
 all_systems = df_storms
 ```
 
+### Null Wind Speed Values
+
+Rows with null `wind_speed` values are dropped during `get_tracks()` processing, as wind speed is a required field for downstream analysis. Older forecasts in the archive may have more null values due to data quality issues in historical ATCF records. A warning is logged when rows are dropped.
+
 ## Additional Resources
 
 - [NHC Official Website](https://www.nhc.noaa.gov/)
