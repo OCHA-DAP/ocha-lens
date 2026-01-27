@@ -169,7 +169,7 @@ TRACK_SCHEMA = pa.DataFrameSchema(
         "valid_time": pa.Column(pd.Timestamp, nullable=False),
         "leadtime": pa.Column("Int64", pa.Check.ge(0), nullable=False),
         "wind_speed": pa.Column(
-            float, pa.Check.between(0, 300), nullable=True
+            float, pa.Check.between(0, 300), nullable=False
         ),
         "pressure": pa.Column(
             float, pa.Check.between(800, 1100), nullable=True
@@ -209,7 +209,6 @@ TRACK_SCHEMA = pa.DataFrameSchema(
         "latitude",
         "longitude",
         "wind_speed",
-        "pressure",
     ],
     report_duplicates="all",
     checks=[

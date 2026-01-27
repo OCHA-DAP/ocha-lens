@@ -73,7 +73,7 @@ This function outputs track data for all forecast points, including both observa
 | `issued_time` | `pd.Timestamp` | **Required** | - | When the forecast/observation was issued |
 | `valid_time` | `pd.Timestamp` | **Required** | Part of unique constraint | Time this position is valid for |
 | `leadtime` | `Int64` | **Required** | ≥ 0, Part of unique constraint | Hours ahead of issue time (0 for observations)[^2] |
-| `wind_speed` | `float` | Optional | 0-300 knots range | Maximum sustained winds |
+| `wind_speed` | `float` | **Required** | 0-300 knots range | Maximum sustained winds |
 | `pressure` | `float` | Optional | 800-1100 hPa range | Central pressure[^3] |
 | `quadrant_radius_34` | `list` | Optional | List of 4 integers [NE, SE, SW, NW] | 34-knot wind radii by quadrant (nautical miles) |
 | `quadrant_radius_50` | `list` | Optional | List of 4 integers [NE, SE, SW, NW] | 50-knot wind radii by quadrant (nautical miles) |
