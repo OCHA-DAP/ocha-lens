@@ -206,8 +206,7 @@ TRACK_SCHEMA = pa.DataFrameSchema(
         "valid_time",
         "leadtime",
         "issued_time",
-        "latitude",
-        "longitude",
+        "geometry",
         "wind_speed",
     ],
     report_duplicates="all",
@@ -604,8 +603,11 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
         # Create list [NE, SE, SW, NW]
         radii_list = [row["rad1"], row["rad2"], row["rad3"], row["rad4"]]
 
-        # Convert to int list if all values are valid
-        if all(pd.notna(r) and r > 0 for r in radii_list):
+        # Convert to int list if all values are valid (>= 0) and at least one is positive
+        # Zero is valid - it means wind doesn't extend in that quadrant at this threshold
+        if all(pd.notna(r) and r >= 0 for r in radii_list) and any(
+            r > 0 for r in radii_list
+        ):
             radii_list = [int(r) for r in radii_list]
         else:
             radii_list = None
@@ -626,15 +628,22 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
                 for idx in indices:
                     df.at[idx, radii_col] = radii[radii_col]
 
-    # Remove duplicate rows after merging wind radii
-    # Keep only one row per unique forecast (atcf_id + issued_time + tau)
+    # Remove duplicate rows after merging wind radii.
+    # ATCF files store wind radii at different thresholds (34, 50, 64 kt) on
+    # separate rows. When these supplementary rows have the same position as
+    # the main forecast, they are duplicates. In older data (e.g., 2001),
+    # supplementary rows may have slightly different positions (typically <1°)
+    # and truncated data (mslp=0, blank fields) - these are kept as separate
+    # rows to preserve all position information from the source data.
+    # Note: pressure is intentionally excluded from the subset because
+    # supplementary rows often have mslp=0 (→NaN) while main rows have
+    # real pressure values.
     df = df.drop_duplicates(
         subset=[
             "forecast_key",
             "latitude",
             "longitude",
             "wind_speed",
-            "pressure",
         ],
         keep="first",
     )

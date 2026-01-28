@@ -126,9 +126,31 @@ named_storms = df_storms[df_storms.storm_id.notna()]
 all_systems = df_storms
 ```
 
+### Missing Observations in Early Archive Data
+
+Archive data from year 2000 and earlier does not include observations (leadtime=0) in official forecast records. NHC's ATCF format change around 2001 began including the current position (tau=0) alongside forecast lead times.
+
+For year 2000 and earlier, only forecast lead times (12, 24, 36, 48, 72+ hours) are available. If you need observations for these years, use IBTrACS or parse CARQ (best track) records separately.
+
 ### Null Wind Speed Values
 
 Rows with null `wind_speed` values are dropped during `get_tracks()` processing, as wind speed is a required field for downstream analysis. Older forecasts in the archive may have more null values due to data quality issues in historical ATCF records. A warning is logged when rows are dropped.
+
+### Potential Duplicates in Historical Data
+
+In older ATCF archive data (particularly pre-2010), you may encounter rows that share the same `atcf_id`, `issued_time`, `valid_time`, `leadtime`, and `wind_speed`, but have slightly different positions (typically <1° apart) and different pressure/nature values.
+
+This occurs because ATCF files store wind radii at different thresholds (34, 50, 64 kt) on separate rows. Some of these supplementary rows contain slightly different positions and have truncated meteorological data (pressure=0/NaN, blank nature field, no gust speed).
+
+These rows are preserved in both `load_nhc()` and `get_tracks()` outputs to maintain all position information from the source. Since the positions differ, they satisfy the track schema's uniqueness constraint (which includes geometry).
+
+If uniqueness is required, filter by keeping rows with non-null pressure values, which typically represent the main forecast with complete data:
+
+```python
+# Filter to main forecast rows only (works for both load_nhc and get_tracks)
+df = df[df['pressure'].notna()]
+gdf_tracks = gdf_tracks[gdf_tracks['pressure'].notna()]
+```
 
 ## Additional Resources
 
