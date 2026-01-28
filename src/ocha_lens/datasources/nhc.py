@@ -646,8 +646,14 @@ def _parse_atcf_adeck(file_path: Path) -> pd.DataFrame:
     ]
     result = df[select_cols].rename(columns={"basin_std": "basin"})
 
-    # Drop rows with missing coordinates
-    result = result.dropna(subset=["latitude", "longitude"])
+    # Drop rows with missing coordinates or wind_speed
+    initial_count = len(result)
+    result = result.dropna(subset=["latitude", "longitude", "wind_speed"])
+    dropped = initial_count - len(result)
+    if dropped > 0:
+        logger.warning(
+            f"Dropped {dropped} rows with null wind_speed from {file_path.name}"
+        )
 
     logger.info(
         f"Parsed {len(result)} valid forecast points from {file_path.name}"
@@ -1565,9 +1571,6 @@ def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
     Creates a GeoDataFrame with one row per track point (observation or
     forecast), including geometry for spatial analysis.
 
-    Note: Rows with null wind_speed values are dropped, as wind_speed is
-    a required field for downstream analysis.
-
     Parameters
     ----------
     df : pd.DataFrame
@@ -1613,16 +1616,6 @@ def get_tracks(df: pd.DataFrame) -> gpd.GeoDataFrame:
 
     # Convert to GeoDataFrame using utility function
     gdf_tracks = _to_gdf(df_tracks)
-
-    # Drop all rows where wind_speed is null
-    mask = gdf_tracks["wind_speed"].isna()
-    gdf_tracks_dropped = gdf_tracks.drop(gdf_tracks[mask].index)
-
-    diff = len(gdf_tracks) - len(gdf_tracks_dropped)
-    if diff > 0:
-        logger.warning(f"Dropped {diff} tracks with null wind_speed values")
-
-    gdf_tracks = gdf_tracks_dropped
 
     logger.info(f"Created GeoDataFrame with {len(gdf_tracks)} track points")
 
