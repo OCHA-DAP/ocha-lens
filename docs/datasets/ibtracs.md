@@ -70,6 +70,9 @@ Note that track points interpolated by the IBTrACS algorithm are dropped from th
 | `quadrant_radius_34` | `object` | **Required** | List of 4 elements | 34-knot wind radii by quadrant - [NE, NW, SE, SW] |
 | `quadrant_radius_50` | `object` | **Required** | List of 4 elements | 50-knot wind radii by quadrant - [NE, NW, SE, SW] |
 | `quadrant_radius_64` | `object` | **Required** | List of 4 elements | 64-knot wind radii by quadrant - [NE, NW, SE, SW] |
+| `usa_quadrant_radius_34` | `object` | Optional | List of 4 elements | USA agency 34-knot wind radii by quadrant - [NE, NW, SE, SW] |
+| `usa_quadrant_radius_50` | `object` | Optional | List of 4 elements | USA agency 50-knot wind radii by quadrant - [NE, NW, SE, SW] |
+| `usa_quadrant_radius_64` | `object` | Optional | List of 4 elements | USA agency 64-knot wind radii by quadrant - [NE, NW, SE, SW] |
 | `geometry` | `gpd.array.GeometryDtype` | **Required** | EPSG:4326, valid lat/lon | Geographic location |
 
 
