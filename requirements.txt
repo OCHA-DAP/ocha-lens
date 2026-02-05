@@ -6,7 +6,7 @@ affine==2.4.0
     # via rasterio
 aiohappyeyeballs==2.6.1
     # via aiohttp
-aiohttp==3.13.2
+aiohttp==3.13.3
     # via ocha-stratus
 aiosignal==1.4.0
     # via aiohttp
