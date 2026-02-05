@@ -76,6 +76,15 @@ TRACK_SCHEMA = pa.DataFrameSchema(
         "quadrant_radius_64": pa.Column(
             "object", checks=pa.Check(check_quadrant_list), nullable=True
         ),
+        "usa_quadrant_radius_34": pa.Column(
+            "object", checks=pa.Check(check_quadrant_list), nullable=True
+        ),
+        "usa_quadrant_radius_50": pa.Column(
+            "object", checks=pa.Check(check_quadrant_list), nullable=True
+        ),
+        "usa_quadrant_radius_64": pa.Column(
+            "object", checks=pa.Check(check_quadrant_list), nullable=True
+        ),
         "point_id": pa.Column(str, nullable=False),
         "storm_id": pa.Column(str, nullable=True),
         "geometry": pa.Column(gpd.array.GeometryDtype, nullable=False),
@@ -384,6 +393,13 @@ def _get_provisional_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
     r_columns = ["usa_r34", "usa_r50", "usa_r64"]
     result_df = normalize_radii(df, r_columns)
 
+    # Copy USA radii before renaming to quadrant_radius
+    # So both quadrant_radius and usa_quadrant_radius are duplicates
+    # for provisional tracks
+    result_df["usa_quadrant_radius_34"] = result_df["usa_r34"]
+    result_df["usa_quadrant_radius_50"] = result_df["usa_r50"]
+    result_df["usa_quadrant_radius_64"] = result_df["usa_r64"]
+
     result_df.rename(
         columns={
             "time": "valid_time",
@@ -531,7 +547,28 @@ def _get_best_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
                 if not np.isnan(value):
                     dff.loc[idx, var_suffix] = value
 
-    result_df = normalize_radii(dff)
+    # Extract USA-specific radii data for all storms
+    for usa_var in ["usa_r34", "usa_r50", "usa_r64"]:
+        dff[usa_var] = np.nan
+        for idx in dff.index:
+            storm_val = df.loc[idx, "storm"]
+            dt_val = df.loc[idx, "date_time"]
+            quadrant_val = df.loc[idx, "quadrant"]
+            value = (
+                ds[usa_var]
+                .sel(
+                    storm=storm_val,
+                    date_time=dt_val,
+                    quadrant=quadrant_val,
+                )
+                .values.item()
+            )
+            if not np.isnan(value):
+                dff.loc[idx, usa_var] = value
+
+    result_df = normalize_radii(
+        dff, ["r34", "r50", "r64", "usa_r34", "usa_r50", "usa_r64"]
+    )
     result_df.rename(
         columns={
             "time": "valid_time",
@@ -547,6 +584,9 @@ def _get_best_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
             "r34": "quadrant_radius_34",
             "r50": "quadrant_radius_50",
             "r64": "quadrant_radius_64",
+            "usa_r34": "usa_quadrant_radius_34",
+            "usa_r50": "usa_quadrant_radius_50",
+            "usa_r64": "usa_quadrant_radius_64",
         },
         inplace=True,
     )
