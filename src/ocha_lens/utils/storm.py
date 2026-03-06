@@ -1,5 +1,7 @@
 import geopandas as gpd
+import numpy as np
 import pandas as pd
+from scipy.interpolate import PchipInterpolator
 from shapely.geometry import Point
 
 
@@ -86,3 +88,111 @@ def check_unique_when_storm_id_not_null(df):
         subset=["storm_id", "valid_time", "leadtime"]
     )
     return ~duplicates.any()
+
+
+def interpolate_track(
+    gdf: gpd.GeoDataFrame,
+    time_col: str = "valid_time",
+    freq: str = "30min",
+    include_ends: bool = True,
+) -> gpd.GeoDataFrame:
+    """
+    Resample a point GeoDataFrame track to a regular time grid.
+
+    - Geometry must be POINT in EPSG:4326.
+    - Lat/lon interpolated with PCHIP.
+    - Other numeric columns interpolated linearly.
+    - Longitude assumed already in [0, 360).
+    - No extrapolation outside observed time range.
+    """
+
+    if gdf.crs is None or gdf.crs.to_epsg() != 4326:
+        raise ValueError("GeoDataFrame must be in EPSG:4326")
+
+    work = gdf.copy()
+
+    work[time_col] = pd.to_datetime(work[time_col], utc=True)
+    work = work.sort_values(time_col).drop_duplicates(subset=[time_col])
+    work = work[~work.geometry.is_empty]
+
+    # extract lat/lon
+    work["lat"] = work.geometry.y
+    work["lon"] = work.geometry.x
+
+    n = len(work)
+
+    if n == 0:
+        return gpd.GeoDataFrame(columns=[time_col, "geometry"], crs=4326)
+
+    if n == 1:
+        row = work.iloc[0]
+        geom = Point(row["lon"] % 360.0, row["lat"])
+        out = gpd.GeoDataFrame(
+            {time_col: [row[time_col]], "geometry": [geom]},
+            crs=4326,
+        )
+
+        other_cols = work.select_dtypes(
+            include=[np.number]
+        ).columns.difference(["lat", "lon"])
+        for col in other_cols:
+            out[col] = float(row[col])
+
+        return out
+
+    # --- target time grid
+    tmin, tmax = work[time_col].min(), work[time_col].max()
+    start = tmin.floor(freq) if include_ends else tmin.ceil(freq)
+    end = tmax.ceil(freq) if include_ends else tmax.floor(freq)
+
+    target = pd.date_range(start, end, freq=freq, tz="UTC")
+    target = target[(target >= tmin) & (target <= tmax)]
+
+    if target.empty:
+        target = pd.DatetimeIndex([tmin, tmax])
+
+    # --- time axis
+    t0 = work[time_col].iloc[0]
+    x = (work[time_col] - t0).dt.total_seconds().to_numpy()
+    x_new = (pd.Series(target) - t0).dt.total_seconds().to_numpy()
+
+    # --- interpolate lat/lon
+    y_lat = work["lat"].to_numpy(float)
+    y_lon = work["lon"].to_numpy(float)
+
+    # --- unwrap longitude to avoid dateline jumps
+    lon_rad = np.deg2rad(y_lon)
+    lon_unwrapped = np.rad2deg(np.unwrap(lon_rad))
+
+    lat_interp = PchipInterpolator(x, y_lat)
+    lon_interp = PchipInterpolator(x, lon_unwrapped)
+
+    lat_new = lat_interp(x_new)
+    lon_new = lon_interp(x_new)
+
+    # wrap back to [-180, 180]
+    lon_new = ((lon_new + 180) % 360) - 180
+
+    # --- other numeric columns
+    other_cols = work.select_dtypes(include=[np.number]).columns.difference(
+        ["lat", "lon"]
+    )
+
+    out = pd.DataFrame(index=target)
+    out["lat"] = lat_new
+    out["lon"] = lon_new
+
+    for col in other_cols:
+        y = work[col].to_numpy(float)
+        out[col] = np.interp(x_new, x, y)
+
+    out.index.name = time_col
+    out = out.reset_index()
+
+    # rebuild geometry
+    geometry = gpd.points_from_xy(out["lon"], out["lat"])
+    out = gpd.GeoDataFrame(
+        out.drop(columns=["lat", "lon"]), geometry=geometry, crs=4326
+    )
+
+    return out
