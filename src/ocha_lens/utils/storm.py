@@ -4,6 +4,8 @@ import pandas as pd
 from scipy.interpolate import PchipInterpolator
 from shapely.geometry import Point
 
+QUADS = ["ne", "se", "sw", "nw"]
+
 
 def _to_gdf(df):
     gdf = gpd.GeoDataFrame(
@@ -99,15 +101,14 @@ def interpolate_track(
     """
     Resample a point GeoDataFrame track to a regular time grid.
 
-    - Geometry must be POINT in EPSG:4326.
-    - Lat/lon interpolated with PCHIP.
-    - Other numeric columns interpolated linearly.
-    - Longitude assumed already in [0, 360).
-    - No extrapolation outside observed time range.
+    - Geometry must be POINT in EPSG:4326
+    - Lat/lon interpolated with PCHIP
+    - Other numeric columns interpolated linearly
+    - Handles dateline crossings safely
     """
 
     if gdf.crs is None or gdf.crs.to_epsg() != 4326:
-        raise ValueError("GeoDataFrame must be in EPSG:4326")
+        raise ValueError("GeoDataFrame must be EPSG:4326")
 
     work = gdf.copy()
 
@@ -115,7 +116,6 @@ def interpolate_track(
     work = work.sort_values(time_col).drop_duplicates(subset=[time_col])
     work = work[~work.geometry.is_empty]
 
-    # extract lat/lon
     work["lat"] = work.geometry.y
     work["lon"] = work.geometry.x
 
@@ -126,22 +126,15 @@ def interpolate_track(
 
     if n == 1:
         row = work.iloc[0]
-        geom = Point(row["lon"] % 360.0, row["lat"])
-        out = gpd.GeoDataFrame(
-            {time_col: [row[time_col]], "geometry": [geom]},
+        return gpd.GeoDataFrame(
+            {time_col: [row[time_col]]},
+            geometry=[Point(row["lon"], row["lat"])],
             crs=4326,
         )
 
-        other_cols = work.select_dtypes(
-            include=[np.number]
-        ).columns.difference(["lat", "lon"])
-        for col in other_cols:
-            out[col] = float(row[col])
-
-        return out
-
     # --- target time grid
     tmin, tmax = work[time_col].min(), work[time_col].max()
+
     start = tmin.floor(freq) if include_ends else tmin.ceil(freq)
     end = tmax.ceil(freq) if include_ends else tmax.floor(freq)
 
@@ -153,24 +146,21 @@ def interpolate_track(
 
     # --- time axis
     t0 = work[time_col].iloc[0]
+
     x = (work[time_col] - t0).dt.total_seconds().to_numpy()
     x_new = (pd.Series(target) - t0).dt.total_seconds().to_numpy()
 
-    # --- interpolate lat/lon
+    # --- interpolate lat
     y_lat = work["lat"].to_numpy(float)
-    y_lon = work["lon"].to_numpy(float)
-
-    # --- unwrap longitude to avoid dateline jumps
-    lon_rad = np.deg2rad(y_lon)
-    lon_unwrapped = np.rad2deg(np.unwrap(lon_rad))
-
     lat_interp = PchipInterpolator(x, y_lat)
-    lon_interp = PchipInterpolator(x, lon_unwrapped)
-
     lat_new = lat_interp(x_new)
+
+    # --- interpolate lon (dateline-safe)
+    y_lon = antimeridian_safe_lon(work["lon"].to_numpy(float))
+    lon_interp = PchipInterpolator(x, y_lon)
     lon_new = lon_interp(x_new)
 
-    # wrap back to [-180, 180]
+    # convert back to standard range
     lon_new = ((lon_new + 180) % 360) - 180
 
     # --- other numeric columns
@@ -189,10 +179,66 @@ def interpolate_track(
     out.index.name = time_col
     out = out.reset_index()
 
-    # rebuild geometry
     geometry = gpd.points_from_xy(out["lon"], out["lat"])
+
     out = gpd.GeoDataFrame(
-        out.drop(columns=["lat", "lon"]), geometry=geometry, crs=4326
+        out.drop(columns=["lat", "lon"]),
+        geometry=geometry,
+        crs=4326,
     )
 
     return out
+
+
+def antimeridian_safe_lon(lon):
+    """
+    Convert longitude array to a continuous sequence suitable for plotting.
+
+    Handles antimeridian crossings by:
+    1. unwrapping longitude
+    2. shifting to the optimal 360° window around the track center
+
+    Parameters
+    ----------
+    lon : array-like
+        Longitudes in degrees (any range).
+
+    Returns
+    -------
+    numpy.ndarray
+        Continuous longitudes suitable for plotting.
+    """
+
+    lon = np.asarray(lon)
+
+    lon_unwrap = np.rad2deg(np.unwrap(np.deg2rad(lon)))
+
+    center = lon_unwrap.mean()
+
+    lon_shift = lon_unwrap - 360 * np.round((lon_unwrap - center) / 360)
+
+    return lon_shift
+
+
+def expand_quad_col(df, col, quads=None):
+    if quads is None:
+        quads = QUADS
+
+    if f"{col}_{quads[0]}" in df:
+        print(f"already done for {col}")
+        return df
+
+    def parse_quad(x):
+        if pd.isna(x):
+            return [np.nan] * len(quads)
+
+        x = x.strip("{}")
+        vals = x.split(",")
+
+        return [np.nan if v in ("NaN", "", "nan") else float(v) for v in vals]
+
+    df_expanded = df[col].apply(parse_quad).apply(pd.Series)
+
+    df_expanded.columns = [f"{col}_{q}" for q in quads]
+
+    return df.join(df_expanded)
