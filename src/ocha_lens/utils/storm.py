@@ -1,10 +1,42 @@
+from typing import Tuple
+
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 from scipy.interpolate import PchipInterpolator
+from shapely import Polygon
 from shapely.geometry import Point
 
 QUADS = ["ne", "se", "sw", "nw"]
+NM_TO_M = 1.852 * 1000
+BUFFER_SPEEDS = [34, 50, 64]
+
+GEO_CRS_MERIDIAN = "+proj=longlat +datum=WGS84 +lon_wrap=0"
+GEO_CRS_ANTIMERIDIAN = "+proj=longlat +datum=WGS84 +lon_wrap=180"
+GEO_CRS_ANTIMERIDIAN_NEGATIVE = "+proj=longlat +datum=WGS84 +lon_wrap=-180"
+
+BASIN_GEO_CRS = {
+    "EP": GEO_CRS_ANTIMERIDIAN_NEGATIVE,
+    "NA": GEO_CRS_MERIDIAN,
+    "NI": GEO_CRS_MERIDIAN,
+    "SI": GEO_CRS_MERIDIAN,
+    "SA": GEO_CRS_MERIDIAN,
+    "WP": GEO_CRS_ANTIMERIDIAN,
+    "SP": GEO_CRS_ANTIMERIDIAN,
+}
+
+PROJ_CRS_MERIDIAN = "EPSG:3857"
+PROJ_CRS_ANTIMERIDIAN = "EPSG:3832"
+
+BASIN_PROJ_CRS = {
+    "EP": PROJ_CRS_ANTIMERIDIAN,
+    "NA": PROJ_CRS_MERIDIAN,
+    "NI": PROJ_CRS_MERIDIAN,
+    "SI": PROJ_CRS_MERIDIAN,
+    "SA": PROJ_CRS_MERIDIAN,
+    "WP": PROJ_CRS_ANTIMERIDIAN,
+    "SP": PROJ_CRS_ANTIMERIDIAN,
+}
 
 
 def _to_gdf(df):
@@ -98,15 +130,6 @@ def interpolate_track(
     freq: str = "30min",
     include_ends: bool = True,
 ) -> gpd.GeoDataFrame:
-    """
-    Resample a point GeoDataFrame track to a regular time grid.
-
-    - Geometry must be POINT in EPSG:4326
-    - Lat/lon interpolated with PCHIP
-    - Other numeric columns interpolated linearly
-    - Handles dateline crossings safely
-    """
-
     if gdf.crs is None or gdf.crs.to_epsg() != 4326:
         raise ValueError("GeoDataFrame must be EPSG:4326")
 
@@ -121,16 +144,13 @@ def interpolate_track(
 
     n = len(work)
 
-    if n == 0:
-        return gpd.GeoDataFrame(columns=[time_col, "geometry"], crs=4326)
+    # --- ensure output schema matches input
+    numeric_cols = work.select_dtypes(include=[np.number]).columns.difference(
+        ["lat", "lon"]
+    )
 
-    if n == 1:
-        row = work.iloc[0]
-        return gpd.GeoDataFrame(
-            {time_col: [row[time_col]]},
-            geometry=[Point(row["lon"], row["lat"])],
-            crs=4326,
-        )
+    if n == 0:
+        return gpd.GeoDataFrame(columns=work.columns, crs=4326)
 
     # --- target time grid
     tmin, tmax = work[time_col].min(), work[time_col].max()
@@ -144,37 +164,42 @@ def interpolate_track(
     if target.empty:
         target = pd.DatetimeIndex([tmin, tmax])
 
-    # --- time axis
     t0 = work[time_col].iloc[0]
 
     x = (work[time_col] - t0).dt.total_seconds().to_numpy()
     x_new = (pd.Series(target) - t0).dt.total_seconds().to_numpy()
 
-    # --- interpolate lat
-    y_lat = work["lat"].to_numpy(float)
-    lat_interp = PchipInterpolator(x, y_lat)
-    lat_new = lat_interp(x_new)
+    out = pd.DataFrame(index=target)
 
-    # --- interpolate lon (dateline-safe)
-    y_lon = antimeridian_safe_lon(work["lon"].to_numpy(float))
-    lon_interp = PchipInterpolator(x, y_lon)
-    lon_new = lon_interp(x_new)
+    # --- lat/lon handling
+    lat = work["lat"].to_numpy(float)
+    lon = antimeridian_safe_lon(work["lon"].to_numpy(float))
 
-    # convert back to standard range
+    if n == 1:
+        lat_new = np.repeat(lat[0], len(x_new))
+        lon_new = np.repeat(lon[0], len(x_new))
+
+    elif n == 2:
+        lat_new = np.interp(x_new, x, lat)
+        lon_new = np.interp(x_new, x, lon)
+
+    else:
+        lat_new = PchipInterpolator(x, lat)(x_new)
+        lon_new = PchipInterpolator(x, lon)(x_new)
+
     lon_new = ((lon_new + 180) % 360) - 180
 
-    # --- other numeric columns
-    other_cols = work.select_dtypes(include=[np.number]).columns.difference(
-        ["lat", "lon"]
-    )
-
-    out = pd.DataFrame(index=target)
     out["lat"] = lat_new
     out["lon"] = lon_new
 
-    for col in other_cols:
+    # --- other numeric columns
+    for col in numeric_cols:
         y = work[col].to_numpy(float)
-        out[col] = np.interp(x_new, x, y)
+
+        if n == 1:
+            out[col] = np.repeat(y[0], len(x_new))
+        else:
+            out[col] = np.interp(x_new, x, y)
 
     out.index.name = time_col
     out = out.reset_index()
@@ -224,8 +249,10 @@ def expand_quad_col(df, col, quads=None):
     if quads is None:
         quads = QUADS
 
-    if f"{col}_{quads[0]}" in df:
-        print(f"already done for {col}")
+    # check if all new columns are already present
+    new_cols = [f"{col}_{q}" for q in quads]
+    if all(c in df.columns for c in new_cols):
+        print("All expanded columns already exist. Skipping expansion.")
         return df
 
     def parse_quad(x):
@@ -242,3 +269,149 @@ def expand_quad_col(df, col, quads=None):
     df_expanded.columns = [f"{col}_{q}" for q in quads]
 
     return df.join(df_expanded)
+
+
+def _radius_from_quadrants(
+    theta_deg: np.ndarray, ne: float, se: float, sw: float, nw: float
+) -> np.ndarray:
+    """
+    Return radius for each angle by linearly interpolating between the
+    four quadrant control points defined at bearings:
+        45°  -> NE
+        135° -> NW
+        225° -> SW
+        315° -> SE
+    Bearing convention: 0° = East, 90° = North (mathematical).
+    """
+    # Control bearings (deg) and radii, with wrap-around point to close the loop
+    bearings = np.array([45, 135, 225, 315, 405], dtype=float)
+    radii = np.array([ne, nw, sw, se, ne], dtype=float)
+
+    # Map all thetas into [0, 360) and also allow values up to 405 for interpolation
+    t = (theta_deg % 360).astype(float)
+    # For values in [0,45), make an equivalent in [360,405) to interpolate to NE nicely
+    t_wrap = t.copy()
+    t_wrap[t < 45] += 360
+
+    # Interpolate and then map back (the interpolation function is periodic due to control duplication)
+    r = np.interp(t_wrap, bearings, radii)
+    return r
+
+
+def make_quadrant_disk(
+    center_xy: Tuple[float, float],
+    ne: float,
+    se: float,
+    sw: float,
+    nw: float,
+    n_points: int = 360,
+) -> Polygon:
+    """
+    Build a smooth polygon around (x, y) using quadrant radii. Units assumed meters.
+    - center_xy: (x, y) in EPSG:3832
+    - ne, se, sw, nw: radii for quadrants (meters)
+    - n_points: angular resolution
+    Bearing convention: 0°=East, 90°=North; polygon traced counter-clockwise.
+    """
+    x0, y0 = center_xy
+    theta = np.linspace(0, 360, n_points, endpoint=False)  # degrees
+    r = _radius_from_quadrants(theta, ne, se, sw, nw)
+
+    # Convert polar -> Cartesian
+    th = np.deg2rad(theta)
+    xs = x0 + r * np.cos(th)
+    ys = y0 + r * np.sin(th)
+
+    # Ensure valid ring: close the polygon
+    coords = np.column_stack([xs, ys])
+    return Polygon(coords)
+
+
+def build_merged_wind_buffer(
+    gdf: gpd.GeoDataFrame,
+    quad_cols: Tuple[str, str, str, str],
+):
+    """
+    Build a merged wind buffer polygon from quadrant radii columns.
+    Parameters
+    ----------
+    gdf: gpd.GeoDataFrame
+        GeoDataFrame with point geometries and quadrant radius columns
+    quad_cols: Tuple[str, str, str, str]
+        Names of the four quadrant radius columns in order:
+        (ne_col, se_col, sw_col, nw_col)
+
+    Returns
+    -------
+    gpd.GeoSeries or None
+        Merged polygon of wind buffers, or None if all radius values are NaN
+
+    """
+    ne_col, se_col, sw_col, nw_col = quad_cols
+    polys = []
+    gdf[[ne_col, se_col, sw_col, nw_col]] = (
+        gdf[[ne_col, se_col, sw_col, nw_col]].fillna(0) * NM_TO_M
+    )
+    for _, row in gdf.iterrows():
+        if row[[ne_col, se_col, sw_col, nw_col]].isna().all():
+            return None
+
+        poly = make_quadrant_disk(
+            (row.geometry.x, row.geometry.y),
+            row[ne_col],
+            row[se_col],
+            row[sw_col],
+            row[nw_col],
+        )
+        polys.append(poly)
+    return gpd.GeoSeries(polys).union_all()
+
+
+def calculate_wind_buffers_gdf(
+    gdf: gpd.GeoDataFrame,
+    quad_cols_format: str = "usa_quadrant_radius_{speed}_{quad}",
+    valid_time_col: str = "valid_time",
+):
+    """
+    Calculate wind buffer polygons for given wind speed quadrants.
+    Note that this function interpolates the storm track to a regular
+    30-minute interval before calculating the wind buffers.
+    Parameters
+    ----------
+    df: pd.DataFrame
+        DataFrame with storm track data including quadrant radius columns
+    quad_cols_format: str = 'quadrant_radius_{speed}_{quad}'
+        Format string for quadrant radius columns, with placeholders for
+        speed and quad (e.g., 'quadrant_radius_{speed}_{quad}')
+    lon_col: str = 'Longitude'
+        Name of the longitude column in df
+    lat_col: str = 'Latitude'
+        Name of the latitude column in df
+    valid_time_col: str = 'valid_time'
+        Name of the valid time column in df
+
+    Returns
+    -------
+    gpd.GeoDataFrame
+        GeoDataFrame with wind buffer polygons for each speed
+
+    """
+    gdf_interp = interpolate_track(
+        gdf,
+        time_col=valid_time_col,
+    )
+    if "usa_quadrant_radius_34_ne" not in gdf_interp.columns:
+        print(gdf_interp)
+    proj_crs = "EPSG:3857"
+    gdf_interp = gdf_interp.to_crs(proj_crs)
+    dicts = []
+    geoms = []
+    for speed in BUFFER_SPEEDS:
+        speed_quad_cols = tuple(
+            quad_cols_format.format(speed=speed, quad=x) for x in QUADS
+        )
+        geoms.append(build_merged_wind_buffer(gdf_interp, speed_quad_cols))
+        dicts.append({"speed": speed})
+    return gpd.GeoDataFrame(dicts, geometry=geoms, crs=proj_crs).to_crs(
+        "EPSG:4326"
+    )
