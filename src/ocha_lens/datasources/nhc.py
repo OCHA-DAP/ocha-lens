@@ -1220,12 +1220,13 @@ def download_nhc_archive(
     downloaded_files = []
     basin_lower = basin.lower()
 
-    # Determine which URL to use based on year
-    # Use aid_public for current year + previous year (recent data not yet archived)
+    # NOTE: Archival usually happens in the spring, where the a-deck files are moved from aid_public to archive.
+    # For now we're just simplifying things to assume that we pull data from the previous year from the archive url,
+    # so this needs to happen after things have been migrated.
     from datetime import datetime
 
     current_year = datetime.utcnow().year
-    if year >= current_year - 1:
+    if year == current_year:
         url_template = ATCF_AID_PUBLIC_URL
     else:
         url_template = ATCF_ARCHIVE_URL
