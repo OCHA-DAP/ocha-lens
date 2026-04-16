@@ -59,17 +59,6 @@ WSP_POLYGON_SCHEMA = pa.DataFrameSchema(
     coerce=True,
 )
 
-WSP_STORM_LINK_SCHEMA = pa.DataFrameSchema(
-    {
-        "issuance": pa.Column(pd.Timestamp, nullable=False),
-        "atcf_id": pa.Column(str, nullable=False),
-    },
-    strict=True,
-    coerce=True,
-    unique=["issuance", "atcf_id"],
-    report_duplicates="all",
-)
-
 
 def load_nhc_wsp(
     issuance: Optional[str] = None,
@@ -141,123 +130,14 @@ def load_nhc_wsp(
     return _load_nhc_wsp_current()
 
 
-def get_nhc_wsp_storm_link(
-    issuances: Optional[List[pd.Timestamp]] = None,
-) -> pd.DataFrame:
-    """
-    Build the storm–issuance link table.
-
-    Two modes:
-
-    1. **Current** (default, no arguments): reads ``CurrentStorms.json`` and
-       returns one row per active storm at the current WSP issuance. Call
-       alongside ``load_nhc_wsp()`` (no arguments) so that the issuance
-       timestamps are consistent.
-    2. **Archive**: pass a list of issuance timestamps (e.g. from
-       ``load_nhc_wsp(start=...).issuance.unique()``) to determine which storms
-       were active at each one using the ATCF storm table. Storms are considered
-       active between their genesis and dissipation dates (inclusive).
-
-    Parameters
-    ----------
-    issuances : list of pd.Timestamp, optional
-        Issuance timestamps to build links for. If None, uses
-        ``CurrentStorms.json``.
-
-    Returns
-    -------
-    pandas.DataFrame
-        Columns: issuance, atcf_id. Empty if no active storms are found.
-    """
-    if issuances is not None:
-        return _get_storm_link_from_table(issuances)
-    return _get_storm_link_from_current()
-
-
-def _get_storm_link_from_current() -> pd.DataFrame:
-    """Build the storm link table from CurrentStorms.json."""
-    data = _fetch_current_storms_json()
-    if data is None:
-        return pd.DataFrame(columns=list(WSP_STORM_LINK_SCHEMA.columns.keys()))
-
-    active_storms = data.get("activeStorms", [])
-    gis_meta = next(
-        (
-            s["windSpeedProbabilitiesGIS"]
-            for s in active_storms
-            if s.get("windSpeedProbabilitiesGIS")
-            and s["windSpeedProbabilitiesGIS"].get("zipFile5km")
-        ),
-        None,
-    )
-
-    if gis_meta is None:
-        return pd.DataFrame(columns=list(WSP_STORM_LINK_SCHEMA.columns.keys()))
-
-    issuance = pd.Timestamp(gis_meta["issuance"], tz="UTC")
-
-    rows = [
-        {
-            "issuance": issuance,
-            "atcf_id": storm["id"][:2].upper() + storm["id"][2:],
-        }
-        for storm in active_storms
-    ]
-
-    if not rows:
-        return pd.DataFrame(columns=list(WSP_STORM_LINK_SCHEMA.columns.keys()))
-
-    return WSP_STORM_LINK_SCHEMA.validate(pd.DataFrame(rows))
-
-
-def _get_storm_link_from_table(
-    issuances: List[pd.Timestamp],
-) -> pd.DataFrame:
-    """
-    Build storm link rows by cross-referencing issuances against the ATCF
-    storm table.
-
-    Parameters
-    ----------
-    issuances : list of pd.Timestamp
-        Issuance timestamps to build links for.
-
-    Returns
-    -------
-    pandas.DataFrame
-        Columns: issuance, atcf_id.
-    """
-    storm_table = _fetch_storm_activity_table()
-    if storm_table.empty:
-        return pd.DataFrame(columns=list(WSP_STORM_LINK_SCHEMA.columns.keys()))
-
-    rows = []
-    for issuance in issuances:
-        active = storm_table[
-            (storm_table["genesis_date"] <= issuance)
-            & (storm_table["dissipation_date"] >= issuance)
-        ]
-        for atcf_id in active["atcf_id"]:
-            rows.append({"issuance": issuance, "atcf_id": atcf_id})
-
-    if not rows:
-        return pd.DataFrame(columns=list(WSP_STORM_LINK_SCHEMA.columns.keys()))
-
-    return WSP_STORM_LINK_SCHEMA.validate(pd.DataFrame(rows))
-
-
 def _load_nhc_wsp_current() -> gpd.GeoDataFrame:
     """Fetch the latest WSP issuance from the active storm JSON."""
     data = _fetch_current_storms_json()
     if data is None:
-        logger.error("Failed to fetch CurrentStorms.json")
-        return _empty_wsp_gdf()
-
-    active_storms = data.get("activeStorms", [])
-    if not active_storms:
         logger.info("No active storms — no WSP product available")
         return _empty_wsp_gdf()
 
+    active_storms = data.get("activeStorms", [])
     # All active storms share the same basin-wide WSP product
     gis_meta = next(
         (
@@ -268,14 +148,12 @@ def _load_nhc_wsp_current() -> gpd.GeoDataFrame:
         ),
         None,
     )
-
     if gis_meta is None:
-        logger.warning("No GIS 5km product in CurrentStorms.json")
+        logger.info("No active storms — no WSP product available")
         return _empty_wsp_gdf()
 
     issuance = pd.Timestamp(gis_meta["issuance"], tz="UTC")
     zip_url = gis_meta["zipFile5km"]
-
     logger.info(f"Fetching current WSP from {zip_url} (issuance {issuance})")
     gdf = _load_wsp_from_url(zip_url, issuance)
     if gdf.empty:
@@ -302,7 +180,8 @@ def _load_nhc_wsp_archive(
     logger.info(f"Found {len(issuances)} archive issuances to fetch")
 
     cache_path = Path(cache_dir) / "raw" / "nhc_wsp"
-    cache_path.mkdir(parents=True, exist_ok=True)
+    if use_cache:
+        cache_path.mkdir(parents=True, exist_ok=True)
 
     all_gdfs = []
     for ts in issuances:
@@ -372,7 +251,7 @@ def _parse_wsp_zip(
     gpd.GeoDataFrame
         Columns: issuance, wind_threshold_kt, percentage, geometry (EPSG:4326).
     """
-    rows = []
+    gdfs = []
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
         with tempfile.TemporaryDirectory() as tmp:
             z.extractall(tmp)
@@ -387,23 +266,33 @@ def _parse_wsp_zip(
                     logger.warning(f"No {kt}kt shapefile found in zip")
                     continue
 
-                gdf = gpd.read_file(os.path.join(tmp, candidates[0]))
-                gdf = gdf.to_crs("EPSG:4326")
+                gdf = gpd.read_file(os.path.join(tmp, candidates[0])).to_crs(
+                    "EPSG:4326"
+                )
+                gdf = gdf[["PERCENTAGE", "geometry"]].rename(
+                    columns={"PERCENTAGE": "percentage"}
+                )
+                gdf["issuance"] = issuance
+                gdf["wind_threshold_kt"] = kt
+                gdfs.append(
+                    gdf[
+                        [
+                            "issuance",
+                            "wind_threshold_kt",
+                            "percentage",
+                            "geometry",
+                        ]
+                    ]
+                )
 
-                for _, row in gdf.iterrows():
-                    rows.append(
-                        {
-                            "issuance": issuance,
-                            "wind_threshold_kt": kt,
-                            "percentage": row["PERCENTAGE"],
-                            "geometry": row["geometry"],
-                        }
-                    )
-
-    if not rows:
+    if not gdfs:
         return _empty_wsp_gdf()
 
-    return gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
+    return gpd.GeoDataFrame(
+        pd.concat(gdfs, ignore_index=True),
+        geometry="geometry",
+        crs="EPSG:4326",
+    )
 
 
 def _list_archive_issuances(
@@ -449,70 +338,6 @@ def _list_archive_issuances(
             issuances.append(ts)
 
     return sorted(issuances)
-
-
-def _fetch_storm_activity_table() -> pd.DataFrame:
-    """
-    Fetch the ATCF storm table and return genesis/dissipation dates per storm.
-
-    Parses ``https://ftp.nhc.noaa.gov/atcf/archive/storm.table``, which covers
-    the full historical record from 1851. Rows with missing date fields are
-    dropped.
-
-    Returns
-    -------
-    pandas.DataFrame
-        Columns: atcf_id (str), genesis_date (pd.Timestamp UTC),
-        dissipation_date (pd.Timestamp UTC).
-    """
-    from ocha_lens.datasources.nhc import NHC_STORM_TABLE_URL
-
-    try:
-        response = requests.get(NHC_STORM_TABLE_URL, timeout=30)
-        response.raise_for_status()
-    except Exception as e:
-        logger.warning(f"Failed to fetch ATCF storm table: {e}")
-        return pd.DataFrame(
-            columns=["atcf_id", "genesis_date", "dissipation_date"]
-        )
-
-    rows = []
-    for line in response.text.strip().split("\n"):
-        if not line.strip():
-            continue
-        cols = [c.strip() for c in line.split(",")]
-        if len(cols) < 21:
-            continue
-
-        atcf_id = cols[20].upper()
-        genesis_str = cols[11]
-        dissipation_str = cols[12]
-
-        if not atcf_id or not genesis_str or not dissipation_str:
-            continue
-
-        try:
-            genesis_date = pd.Timestamp(
-                datetime.strptime(genesis_str, "%Y%m%d%H")
-            )
-            dissipation_date = pd.Timestamp(
-                datetime.strptime(dissipation_str, "%Y%m%d%H")
-            )
-        except ValueError:
-            continue
-
-        rows.append(
-            {
-                "atcf_id": atcf_id,
-                "genesis_date": genesis_date,
-                "dissipation_date": dissipation_date,
-            }
-        )
-
-    logger.info(
-        f"Loaded activity dates for {len(rows)} storms from ATCF table"
-    )
-    return pd.DataFrame(rows)
 
 
 def _empty_wsp_gdf() -> gpd.GeoDataFrame:
