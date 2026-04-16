@@ -493,14 +493,10 @@ def _fetch_storm_activity_table() -> pd.DataFrame:
 
         try:
             genesis_date = pd.Timestamp(
-                datetime.strptime(genesis_str, "%Y%m%d%H").replace(
-                    tzinfo=timezone.utc
-                )
+                datetime.strptime(genesis_str, "%Y%m%d%H")
             )
             dissipation_date = pd.Timestamp(
-                datetime.strptime(dissipation_str, "%Y%m%d%H").replace(
-                    tzinfo=timezone.utc
-                )
+                datetime.strptime(dissipation_str, "%Y%m%d%H")
             )
         except ValueError:
             continue
