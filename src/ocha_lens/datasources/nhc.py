@@ -918,7 +918,6 @@ def _fetch_current_storms_json() -> Optional[dict]:
     try:
         response = requests.get(NHC_CURRENT_STORMS_URL, timeout=10)
         response.raise_for_status()
-        print(response.json())
         return response.json()
     except requests.exceptions.Timeout:
         logger.error(f"Timeout fetching {NHC_CURRENT_STORMS_URL}")
