@@ -1680,7 +1680,7 @@ WSP_POLYGON_SCHEMA = pa.DataFrameSchema(
 )
 
 
-def load_nhc_wsp(
+def get_wsp(
     issued_time: Optional[str] = None,
     start: Optional[str] = None,
     end: Optional[str] = None,
