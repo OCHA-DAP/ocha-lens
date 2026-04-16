@@ -192,6 +192,9 @@ gdf_tracks = gdf_tracks[gdf_tracks['pressure'].notna()]
 - [NHC Forecast Verification](https://www.nhc.noaa.gov/verification/)
 - [HURDAT2 Best Track Data](https://www.nhc.noaa.gov/data/hurdat/)
 - [Current Storms JSON API](https://www.nhc.noaa.gov/CurrentStorms.json)
+- [About Wind Speed Probabilities (PDF)](https://www.nhc.noaa.gov/about/pdf/About_Windspeed_Probabilities.pdf) - NHC's guide to interpreting WSP products
+- [WSP GIS Archive](https://www.nhc.noaa.gov/gis/forecast/archive/) - Archived WSP shapefiles (2017–present)
+- [NHC GIS Products](https://www.nhc.noaa.gov/gis/) - Overview of all NHC GIS data products
 
 [^1]: NHC standardized basins are `NA` (North Atlantic, from ATCF code AL) and `EP` (Eastern North Pacific, from ATCF codes EP and CP). The ATCF Central Pacific (CP) area is mapped to EP basin to match IBTrACS and ECMWF conventions. Use the `provider` field to distinguish between NHC (east of 140°W) and CPHC (140°W-180°W) responsibility areas.
 
