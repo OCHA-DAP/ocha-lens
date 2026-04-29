@@ -39,6 +39,20 @@ df_storms = lens.nhc.get_storms(df)
 gdf_tracks = lens.nhc.get_tracks(df)
 ```
 
+### Wind Speed Probability
+```python
+import ocha_lens as lens
+
+# Load a specific issuance
+gdf = lens.nhc.get_wsp(issued_time="2023082200")
+
+# Load a date range
+gdf = lens.nhc.get_wsp(start="2023-08-20", end="2023-08-25")
+
+# Load current (when storms are active)
+gdf = lens.nhc.get_wsp()
+```
+
 ## Output Data Structure
 
 The primary goal of this module is to provide easy access to NHC data in a tabular, analysis-ready format. The schemas are designed to be interoperable with other cyclone track data sources (e.g., IBTrACS, ECMWF).
@@ -80,6 +94,19 @@ This function outputs track data for all forecast points, including both observa
 | `quadrant_radius_64` | `list` | Optional | List of 4 integers [NE, SE, SW, NW] | 64-knot wind radii by quadrant (nautical miles) |
 | `number` | `str` | Optional | - | Storm number |
 | `geometry` | `gpd.array.GeometryDtype` | **Required** | EPSG:4326, valid lat/lon | Geographic location |
+
+See the enforced schema in the [source code](https://github.com/OCHA-DAP/ocha-lens/blob/main/src/ocha_lens/datasources/nhc.py).
+
+### `lens.nhc.get_wsp()`
+
+Basin-wide probability polygons showing the likelihood of 34, 50, or 64-knot winds occurring at any point within the 5-day forecast period. Available from 2017 onward, issued every 6 hours when NHC has active advisories. Returns one row per (issued_time, wind_threshold_kt, probability band).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `issued_time` | `pd.Timestamp` | Forecast issued time (UTC) |
+| `wind_threshold_kt` | `int` | Wind speed threshold in knots (34, 50, or 64) |
+| `percentage` | `int` | Lower bound of probability band (0, 5, 10, ..., 90). 0 means <5%, 90 means >90% |
+| `geometry` | `MultiPolygon` | Area covered by the probability band (WGS84). `None` for the <5% band |
 
 See the enforced schema in the [source code](https://github.com/OCHA-DAP/ocha-lens/blob/main/src/ocha_lens/datasources/nhc.py).
 
@@ -165,6 +192,9 @@ gdf_tracks = gdf_tracks[gdf_tracks['pressure'].notna()]
 - [NHC Forecast Verification](https://www.nhc.noaa.gov/verification/)
 - [HURDAT2 Best Track Data](https://www.nhc.noaa.gov/data/hurdat/)
 - [Current Storms JSON API](https://www.nhc.noaa.gov/CurrentStorms.json)
+- [About Wind Speed Probabilities (PDF)](https://www.nhc.noaa.gov/about/pdf/About_Windspeed_Probabilities.pdf) - NHC's guide to interpreting WSP products
+- [WSP GIS Archive](https://www.nhc.noaa.gov/gis/forecast/archive/) - Archived WSP shapefiles (2017–present)
+- [NHC GIS Products](https://www.nhc.noaa.gov/gis/) - Overview of all NHC GIS data products
 
 [^1]: NHC standardized basins are `NA` (North Atlantic, from ATCF code AL) and `EP` (Eastern North Pacific, from ATCF codes EP and CP). The ATCF Central Pacific (CP) area is mapped to EP basin to match IBTrACS and ECMWF conventions. Use the `provider` field to distinguish between NHC (east of 140°W) and CPHC (140°W-180°W) responsibility areas.
 
