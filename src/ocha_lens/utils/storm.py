@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from scipy.interpolate import PchipInterpolator
 from shapely import Polygon
-from shapely.geometry import Point
+from shapely.geometry import MultiPolygon, Point, box
 
 QUADS = ["ne", "se", "sw", "nw"]
 NM_TO_M = 1.852 * 1000
@@ -396,13 +396,17 @@ def calculate_wind_buffers_gdf(
         GeoDataFrame with wind buffer polygons for each speed
 
     """
+    basin = gdf["basin"].iloc[0] if "basin" in gdf.columns else None
+    geo_crs = BASIN_GEO_CRS.get(basin, GEO_CRS_MERIDIAN)
+    proj_crs = BASIN_PROJ_CRS.get(basin, PROJ_CRS_MERIDIAN)
+
     gdf_interp = interpolate_track(
         gdf,
         time_col=valid_time_col,
     )
-    if "usa_quadrant_radius_34_ne" not in gdf_interp.columns:
-        print(gdf_interp)
-    proj_crs = "EPSG:3857"
+    # Reproject via basin-appropriate lon_wrap CRS so antimeridian-crossing
+    # tracks have continuous longitudes before projecting to Mercator.
+    gdf_interp = gdf_interp.to_crs(geo_crs)
     gdf_interp = gdf_interp.to_crs(proj_crs)
     dicts = []
     geoms = []
@@ -412,6 +416,112 @@ def calculate_wind_buffers_gdf(
         )
         geoms.append(build_merged_wind_buffer(gdf_interp, speed_quad_cols))
         dicts.append({"speed": speed})
-    return gpd.GeoDataFrame(dicts, geometry=geoms, crs=proj_crs).to_crs(
+    result = gpd.GeoDataFrame(dicts, geometry=geoms, crs=proj_crs).to_crs(
         "EPSG:4326"
+    )
+    world = box(-180, -90, 180, 90)
+    result.geometry = result.geometry.intersection(world)
+    return result
+
+
+def _filled_geom(geom):
+    """Return geometry with interior rings removed (fills donut holes)."""
+    if geom.geom_type == "Polygon":
+        return Polygon(geom.exterior.coords)
+    elif geom.geom_type == "MultiPolygon":
+        return MultiPolygon([Polygon(p.exterior.coords) for p in geom.geoms])
+    return geom
+
+
+def _best_atcf_for_polygon(geom, tracks_at_time: gpd.GeoDataFrame) -> str:
+    """Return the atcf_id whose track points are most contained within geom.
+
+    Falls back to nearest centroid if no track points land inside the filled
+    polygon (e.g. coarse track resolution relative to a small polygon).
+    """
+    filled = _filled_geom(geom)
+    counts = (
+        tracks_at_time.assign(inside=tracks_at_time.geometry.within(filled))
+        .groupby("atcf_id")["inside"]
+        .sum()
+    )
+    if counts.max() > 0:
+        return counts.idxmax()
+    centroids = tracks_at_time.groupby("atcf_id").geometry.apply(
+        lambda gs: gs.union_all().centroid
+    )
+    return centroids.apply(lambda c: geom.centroid.distance(c)).idxmin()
+
+
+def match_wsp_to_tracks(
+    gdf_wsp: gpd.GeoDataFrame,
+    gdf_tracks: gpd.GeoDataFrame,
+) -> gpd.GeoDataFrame:
+    """Match WSP polygons to NHC track forecasts by issued_time.
+
+    For issued_times with a single active storm the polygon is assigned
+    directly.  For multiple active storms the MultiPolygon is exploded into
+    individual components and each is matched to the track whose forecast
+    points fall inside it (using hole-filled geometry to handle donut shapes).
+
+    Parameters
+    ----------
+    gdf_wsp:
+        Rows from storms.nhc_wsp_polygon.
+        Required columns: id, issued_time, wind_threshold_kt, percentage, geometry.
+    gdf_tracks:
+        Rows from storms.nhc_tracks_geo.
+        Required columns: atcf_id, issued_time, geometry (Point, EPSG:4326).
+
+    Returns
+    -------
+    GeoDataFrame
+        gdf_wsp with an added ``atcf_id`` column.  For multi-storm
+        issued_times the MultiPolygon rows are exploded into individual polygon
+        rows (one per storm).  Rows whose issued_time has no corresponding
+        tracks are returned with ``atcf_id=None``.
+    """
+    gdf_wsp = gdf_wsp[gdf_wsp.geometry.notna()].copy()
+
+    track_counts = gdf_tracks.groupby("issued_time")["atcf_id"].nunique()
+    single_times = track_counts[track_counts == 1].index
+    multi_times = track_counts[track_counts > 1].index
+
+    # --- single-storm: direct merge ---
+    single_atcf = gdf_tracks[
+        gdf_tracks["issued_time"].isin(single_times)
+    ].drop_duplicates("issued_time")[["issued_time", "atcf_id"]]
+    gdf_single = gdf_wsp[gdf_wsp["issued_time"].isin(single_times)].merge(
+        single_atcf, on="issued_time", how="left"
+    )
+
+    # --- multi-storm: explode then spatial match ---
+    gdf_multi = gdf_wsp[gdf_wsp["issued_time"].isin(multi_times)].copy()
+    if not gdf_multi.empty:
+        gdf_multi_exp = gdf_multi.explode(index_parts=False).reset_index(
+            drop=True
+        )
+        atcf_ids = []
+        for _, row in gdf_multi_exp.iterrows():
+            tracks_at_time = gdf_tracks[
+                gdf_tracks["issued_time"] == row["issued_time"]
+            ]
+            atcf_ids.append(
+                _best_atcf_for_polygon(row.geometry, tracks_at_time)
+            )
+        gdf_multi_exp["atcf_id"] = atcf_ids
+    else:
+        gdf_multi_exp = gdf_multi.copy()
+        gdf_multi_exp["atcf_id"] = pd.Series(dtype="object")
+
+    # --- no-track times: return with atcf_id=None ---
+    tracked_times = set(single_times) | set(multi_times)
+    gdf_no_track = gdf_wsp[~gdf_wsp["issued_time"].isin(tracked_times)].copy()
+    gdf_no_track["atcf_id"] = None
+
+    return gpd.GeoDataFrame(
+        pd.concat(
+            [gdf_single, gdf_multi_exp, gdf_no_track], ignore_index=True
+        ),
+        crs=gdf_wsp.crs,
     )
