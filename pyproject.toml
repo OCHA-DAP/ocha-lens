@@ -106,3 +106,8 @@ format-check = ["ruff format --config ruff.toml --check --diff {args:.}",]
 format-fix = ["ruff format --config ruff.toml {args:.}",]
 lint-check = ["ruff check --config ruff.toml {args:.}",]
 lint-fix = ["ruff check --config ruff.toml --fix {args:.}",]
+
+[dependency-groups]
+dev = [
+    "marimo>=0.23.4",
+]

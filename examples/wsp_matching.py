@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.10.0"
+__generated_with = "0.23.4"
 app = marimo.App(width="medium")
 
 
@@ -13,28 +13,26 @@ def _():
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        # WSP Polygon → Track Matching
+    mo.md("""
+    # WSP Polygon → Track Matching
 
-        `match_wsp_to_tracks` assigns an `atcf_id` to each row in
-        `storms.nhc_wsp_polygon` by matching against `storms.nhc_tracks_geo`.
+    `match_wsp_to_tracks` assigns an `atcf_id` to each row in
+    `storms.nhc_wsp_polygon` by matching against `storms.nhc_tracks_geo`.
 
-        The matching logic has three cases:
+    The matching logic has three cases:
 
-        | Scenario | Method |
-        |---|---|
-        | One active storm at `issued_time` | Direct merge — no geometry needed |
-        | Multiple active storms | Explode MultiPolygon components, pick the track with the most forecast points inside each component |
-        | No tracks at `issued_time` | Returned with `atcf_id = None` |
+    | Scenario | Method |
+    |---|---|
+    | One active storm at `issued_time` | Direct merge — no geometry needed |
+    | Multiple active storms | Explode MultiPolygon components, pick the track with the most forecast points inside each component |
+    | No tracks at `issued_time` | Returned with `atcf_id = None` |
 
-        **Does the whole track need to be inside the polygon?**
-        No — we count how many forecast *points* from each track fall inside the
-        *filled* polygon (outer boundary only; donut holes are ignored).
-        The storm with the highest count wins.  The centroid fallback only fires
-        if literally no track has any points inside.
-        """
-    )
+    **Does the whole track need to be inside the polygon?**
+    No — we count how many forecast *points* from each track fall inside the
+    *filled* polygon (outer boundary only; donut holes are ignored).
+    The storm with the highest count wins.  The centroid fallback only fires
+    if literally no track has any points inside.
+    """)
     return
 
 
@@ -43,62 +41,38 @@ def _():
     import geopandas as gpd
     import matplotlib.patches as mpatches
     import matplotlib.pyplot as plt
-    import numpy as np
+    import numpy as np  # noqa: F401
     import pandas as pd
-    from shapely.geometry import MultiPolygon, Point, Polygon
+    from shapely.geometry import MultiPolygon, Point
 
     from ocha_lens.utils.storm import match_wsp_to_tracks
 
-    return (
-        MultiPolygon,
-        Point,
-        Polygon,
-        gpd,
-        match_wsp_to_tracks,
-        mpatches,
-        np,
-        pd,
-        plt,
-    )
+    return MultiPolygon, Point, gpd, match_wsp_to_tracks, mpatches, np, pd, plt
 
 
 @app.cell
-def _(Point, Polygon):
-    def _make_donut(cx, cy, r_outer, r_inner, n=64):
-        """Create a ring polygon (outer circle minus inner circle) in degrees."""
+def _(Point):
+    def make_donut(cx, cy, r_outer, r_inner, n=64):
+        """Ring polygon (outer circle minus inner circle), coords in degrees."""
         outer = Point(cx, cy).buffer(r_outer, resolution=n)
         inner = Point(cx, cy).buffer(r_inner, resolution=n)
         return outer.difference(inner)
 
-    def _make_track_points(cx, cy, n=8, spread=1.5):
-        """Create a cluster of Points simulating forecast positions near (cx, cy)."""
-        import numpy as np
-
-        rng = np.random.default_rng(42)
-        lons = cx + rng.uniform(-spread, spread, n)
-        lats = cy + rng.uniform(-spread, spread, n)
-        return [Point(lon, lat) for lon, lat in zip(lons, lats)]
-
-    return
+    return (make_donut,)
 
 
 @app.cell
 def _(mo):
-    mo.md("## Case 1 — single active storm")
+    mo.md("""
+    ## Case 1 — single active storm
+    """)
     return
 
 
 @app.cell
-def _(MultiPolygon, Point, Polygon, gpd, match_wsp_to_tracks, pd):
-    def _make_donut(cx, cy, r_outer, r_inner, n=64):
-        outer = Point(cx, cy).buffer(r_outer, resolution=n)
-        inner = Point(cx, cy).buffer(r_inner, resolution=n)
-        return outer.difference(inner)
-
+def _(MultiPolygon, Point, gpd, make_donut, match_wsp_to_tracks, np, pd):
     _t1 = pd.Timestamp("2024-09-10 12:00")
-
-    # One donut for storm AL05 centred at (-70, 25)
-    _donut_a = _make_donut(-70, 25, r_outer=4, r_inner=1.5)
+    _donut_a = make_donut(-70, 25, r_outer=4, r_inner=1.5)
 
     _gdf_wsp_1 = gpd.GeoDataFrame(
         {
@@ -110,9 +84,6 @@ def _(MultiPolygon, Point, Polygon, gpd, match_wsp_to_tracks, pd):
         geometry=[MultiPolygon([_donut_a])] * 3,
         crs="EPSG:4326",
     )
-
-    # Eight track forecast points scattered around the storm centre
-    import numpy as np
 
     _rng = np.random.default_rng(0)
     _track_pts = [
@@ -138,26 +109,20 @@ def _(MultiPolygon, Point, Polygon, gpd, match_wsp_to_tracks, pd):
 
 @app.cell
 def _(mo):
-    mo.md("## Case 2 — two active storms at the same issued_time")
+    mo.md("""
+    ## Case 2 — two active storms at the same issued_time
+    """)
     return
 
 
 @app.cell
-def _(MultiPolygon, Point, Polygon, gpd, match_wsp_to_tracks, pd):
-    def _make_donut(cx, cy, r_outer, r_inner, n=64):
-        outer = Point(cx, cy).buffer(r_outer, resolution=n)
-        inner = Point(cx, cy).buffer(r_inner, resolution=n)
-        return outer.difference(inner)
-
+def _(MultiPolygon, Point, gpd, make_donut, match_wsp_to_tracks, np, pd):
     _t2 = pd.Timestamp("2024-09-14 00:00")
-    import numpy as np
-
     _rng = np.random.default_rng(1)
 
-    # Storm A: Atlantic, centred at (-70, 25)
-    # Storm B: Eastern Pacific, centred at (-110, 18)
-    _donut_a = _make_donut(-70, 25, r_outer=4, r_inner=1.5)
-    _donut_b = _make_donut(-110, 18, r_outer=3, r_inner=1.0)
+    # Storm A: Atlantic (-70, 25)   Storm B: Eastern Pacific (-110, 18)
+    _donut_a = make_donut(-70, 25, r_outer=4, r_inner=1.5)
+    _donut_b = make_donut(-110, 18, r_outer=3, r_inner=1.0)
 
     # NHC publishes one MultiPolygon per (issued_time, threshold, percentage)
     # containing one component per active storm
@@ -191,7 +156,7 @@ def _(MultiPolygon, Point, Polygon, gpd, match_wsp_to_tracks, pd):
     )
 
     _result_2 = match_wsp_to_tracks(_gdf_wsp_2, _gdf_tracks_2)
-    # Each row is exploded — expect 4 rows (2 wsp rows × 2 storm components each)
+    # 2 wsp rows × 2 storm components = 4 rows after explode
     _result_2[
         ["id", "issued_time", "wind_threshold_kt", "percentage", "atcf_id"]
     ]
@@ -200,34 +165,24 @@ def _(MultiPolygon, Point, Polygon, gpd, match_wsp_to_tracks, pd):
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ## Edge case — track entirely inside the hole (centroid fallback)
+    mo.md("""
+    ## Edge case — track entirely inside the hole (centroid fallback)
 
-        If every forecast point lands in the donut's hole (e.g. the inner radius
-        is large relative to the forecast scatter), `within()` returns zero for
-        all tracks.  The fallback computes the centroid of each track cluster and
-        assigns the polygon to the nearest one.
-        """
-    )
+    If every forecast point lands in the donut's hole, `within()` scores zero
+    for all tracks and the fallback assigns the polygon to the nearest track
+    centroid instead.
+    """)
     return
 
 
 @app.cell
-def _(MultiPolygon, Point, Polygon, gpd, match_wsp_to_tracks, pd):
-    def _make_donut(cx, cy, r_outer, r_inner, n=64):
-        outer = Point(cx, cy).buffer(r_outer, resolution=n)
-        inner = Point(cx, cy).buffer(r_inner, resolution=n)
-        return outer.difference(inner)
-
+def _(MultiPolygon, Point, gpd, make_donut, match_wsp_to_tracks, np, pd):
     _t3 = pd.Timestamp("2024-09-18 06:00")
-    import numpy as np
-
     _rng = np.random.default_rng(2)
 
-    # Very large inner radius — track points land in the hole
-    _donut_tight = _make_donut(-70, 25, r_outer=5, r_inner=4)
-    _donut_far = _make_donut(-110, 18, r_outer=5, r_inner=4)
+    # Very large inner radius (4°) — track scatter (±0.3°) stays inside the hole
+    _donut_a = make_donut(-70, 25, r_outer=5, r_inner=4)
+    _donut_b = make_donut(-110, 18, r_outer=5, r_inner=4)
 
     _gdf_wsp_3 = gpd.GeoDataFrame(
         {
@@ -236,11 +191,10 @@ def _(MultiPolygon, Point, Polygon, gpd, match_wsp_to_tracks, pd):
             "wind_threshold_kt": [34],
             "percentage": [90],
         },
-        geometry=[MultiPolygon([_donut_tight, _donut_far])],
+        geometry=[MultiPolygon([_donut_a, _donut_b])],
         crs="EPSG:4326",
     )
 
-    # Track points clustered tightly at the storm centres (inside both holes)
     _pts_a = [
         Point(-70 + _rng.uniform(-0.3, 0.3), 25 + _rng.uniform(-0.3, 0.3))
         for _ in range(6)
@@ -268,17 +222,14 @@ def _(MultiPolygon, Point, Polygon, gpd, match_wsp_to_tracks, pd):
 
 @app.cell
 def _(mo):
-    mo.md("## Edge case — no tracks for an issued_time")
+    mo.md("""
+    ## Edge case — no tracks for an issued_time
+    """)
     return
 
 
 @app.cell
-def _(MultiPolygon, Point, Polygon, gpd, match_wsp_to_tracks, pd):
-    def _make_donut(cx, cy, r_outer, r_inner, n=64):
-        outer = Point(cx, cy).buffer(r_outer, resolution=n)
-        inner = Point(cx, cy).buffer(r_inner, resolution=n)
-        return outer.difference(inner)
-
+def _(MultiPolygon, Point, gpd, make_donut, match_wsp_to_tracks, pd):
     _t4 = pd.Timestamp("2024-10-01 00:00")
     _t5 = pd.Timestamp("2024-10-02 00:00")
 
@@ -289,14 +240,14 @@ def _(MultiPolygon, Point, Polygon, gpd, match_wsp_to_tracks, pd):
             "wind_threshold_kt": [34, 34],
             "percentage": [50, 50],
         },
-        geometry=[MultiPolygon([_make_donut(-70, 25, 4, 1.5)])] * 2,
+        geometry=[MultiPolygon([make_donut(-70, 25, 4, 1.5)])] * 2,
         crs="EPSG:4326",
     )
 
     _gdf_tracks_4 = gpd.GeoDataFrame(
         {
             "atcf_id": ["AL052024"],
-            "issued_time": [_t4],  # no entry for t5
+            "issued_time": [_t4],
             "valid_time": [_t4],
         },
         geometry=[Point(-70, 25)],
@@ -312,26 +263,29 @@ def _(MultiPolygon, Point, Polygon, gpd, match_wsp_to_tracks, pd):
 
 @app.cell
 def _(mo):
-    mo.md("## Visual overview — two-storm case")
+    mo.md("""
+    ## Visual overview — two-storm case
+    """)
     return
 
 
 @app.cell
 def _(
-    MultiPolygon, Point, Polygon, gpd, match_wsp_to_tracks, mpatches, pd, plt
+    MultiPolygon,
+    Point,
+    gpd,
+    make_donut,
+    match_wsp_to_tracks,
+    mpatches,
+    np,
+    pd,
+    plt,
 ):
-    def _make_donut(cx, cy, r_outer, r_inner, n=64):
-        outer = Point(cx, cy).buffer(r_outer, resolution=n)
-        inner = Point(cx, cy).buffer(r_inner, resolution=n)
-        return outer.difference(inner)
-
-    import numpy as np
-
     _rng = np.random.default_rng(1)
     _t = pd.Timestamp("2024-09-14 00:00")
 
-    _donut_a = _make_donut(-70, 25, r_outer=4, r_inner=1.5)
-    _donut_b = _make_donut(-110, 18, r_outer=3, r_inner=1.0)
+    _donut_a = make_donut(-70, 25, r_outer=4, r_inner=1.5)
+    _donut_b = make_donut(-110, 18, r_outer=3, r_inner=1.0)
 
     _gdf_wsp = gpd.GeoDataFrame(
         {
@@ -370,7 +324,6 @@ def _(
         _x, _y = _row.geometry.exterior.xy
         _ax.fill(_x, _y, alpha=0.25, color=_c)
         _ax.plot(_x, _y, color=_c, linewidth=1.5)
-        # draw the hole(s)
         for _interior in _row.geometry.interiors:
             _hx, _hy = _interior.xy
             _ax.fill(_hx, _hy, color="white")
@@ -378,12 +331,16 @@ def _(
 
     for _atcf, _grp in _gdf_tracks.groupby("atcf_id"):
         _c = _colors[_atcf]
-        _xs = [p.x for p in _grp.geometry]
-        _ys = [p.y for p in _grp.geometry]
-        _ax.scatter(_xs, _ys, color=_c, s=40, zorder=5, label=_atcf)
+        _ax.scatter(
+            [p.x for p in _grp.geometry],
+            [p.y for p in _grp.geometry],
+            color=_c,
+            s=40,
+            zorder=5,
+        )
 
     _ax.set_title(
-        "WSP donuts (filled = matched storm) + forecast track points"
+        "WSP donuts (colour = matched storm) + forecast track points"
     )
     _ax.legend(
         handles=[mpatches.Patch(color=v, label=k) for k, v in _colors.items()]
@@ -391,3 +348,8 @@ def _(
     _ax.set_xlabel("Longitude")
     _ax.set_ylabel("Latitude")
     _fig
+    return
+
+
+if __name__ == "__main__":
+    app.run()

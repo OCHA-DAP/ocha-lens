@@ -259,10 +259,17 @@ def expand_quad_col(df, col, quads=None):
         if pd.isna(x):
             return [np.nan] * len(quads)
 
-        x = x.strip("{}")
+        x = x.strip(
+            "{}[]"
+        )  # handle both PostgreSQL {..} and JSON [..] formats
         vals = x.split(",")
 
-        return [np.nan if v in ("NaN", "", "nan") else float(v) for v in vals]
+        return [
+            np.nan
+            if v.strip() in ("NaN", "", "nan", "null", "None")
+            else float(v)
+            for v in vals
+        ]
 
     df_expanded = df[col].apply(parse_quad).apply(pd.Series)
 
