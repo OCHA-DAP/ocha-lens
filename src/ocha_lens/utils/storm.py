@@ -427,7 +427,7 @@ def calculate_wind_buffers_gdf(
         "EPSG:4326"
     )
     world = box(-180, -90, 180, 90)
-    result.geometry = result.geometry.buffer(0).intersection(world)
+    result.geometry = result.geometry.intersection(world)
     return result
 
 
