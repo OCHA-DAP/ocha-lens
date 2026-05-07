@@ -25,6 +25,9 @@ ENV/
 # uv
 uv.lock
 
+# Local scratch notes (per-developer, not for the repo)
+.scrap/
+
 # Distribution / packaging
 .Python
 env/
