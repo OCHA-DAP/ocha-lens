@@ -20,11 +20,13 @@ Endpoints
 """
 
 import logging
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import geopandas as gpd
 import pandas as pd
 import requests
+
+from ocha_lens.utils.storm import _to_gdf
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +34,17 @@ BASE_URL = "https://www.gdacs.org/gdacsapi/api"
 
 _TIMEOUT = 30
 _PAGE_SIZE = 100
+_EVENT_TYPE = "TC"
+_BUFFER_KEYS = ("buffer39", "buffer74")
+
+AlertLevel = Literal["Green", "Orange", "Red"]
 
 # Alert levels are queried one at a time and results deduped on
 # eventid. The combined-alertlevel API filter is unreliable, and a
 # storm's alert level can change during its lifetime — without
 # per-level iteration + dedup, the same event would appear multiple
 # times or be missed entirely.
-_ALERT_LEVELS = ("Green", "Orange", "Red")
+_ALERT_LEVELS: Tuple[AlertLevel, ...] = ("Green", "Orange", "Red")
 
 _TIMELINE_NUMERIC_COLS = [
     "latitude",
@@ -65,7 +71,21 @@ _TIMELINE_NUMERIC_COLS = [
     "windrad_nm_64kt_nw",
 ]
 
-_EVENT_COLS = [
+_TIMELINE_COLS = (
+    [
+        "advisory_number",
+        "name",
+        "advisory_datetime",
+        "actual",
+        "current",
+        "alertcolor",
+        "country",
+    ]
+    + _TIMELINE_NUMERIC_COLS
+    + ["storm_status"]
+)
+
+_EVENT_ROW_KEYS = [
     "eventid",
     "name",
     "alert_level",
@@ -78,14 +98,44 @@ _EVENT_COLS = [
     "severity_kmh",
     "severity_text",
     "source",
-    "geometry",
+    "longitude",
+    "latitude",
 ]
+
+
+_session: Optional[requests.Session] = None
+
+
+def _get_session() -> requests.Session:
+    global _session
+    if _session is None:
+        _session = requests.Session()
+    return _session
+
+
+def _get_json(
+    url: str,
+    params: Optional[Dict[str, Any]] = None,
+    *,
+    allow_empty: bool = False,
+) -> Any:
+    """GET a URL and return parsed JSON, raising on HTTP error.
+
+    If ``allow_empty`` is True, returns None for an empty response
+    body instead of raising — used by paginated endpoints where an
+    empty body signals end-of-pages.
+    """
+    r = _get_session().get(url, params=params, timeout=_TIMEOUT)
+    r.raise_for_status()
+    if allow_empty and not r.text.strip():
+        return None
+    return r.json()
 
 
 def get_events(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
-    alert_levels: Optional[List[Literal["Green", "Orange", "Red"]]] = None,
+    alert_levels: Optional[List[AlertLevel]] = None,
     source: Optional[Literal["NOAA", "JTWC"]] = None,
     page_size: int = _PAGE_SIZE,
 ) -> gpd.GeoDataFrame:
@@ -120,7 +170,7 @@ def get_events(
         page = 1
         while True:
             params: Dict[str, Any] = {
-                "eventlist": "TC",
+                "eventlist": _EVENT_TYPE,
                 "alertlevel": level,
                 "pageSize": page_size,
                 "pageNumber": page,
@@ -130,15 +180,14 @@ def get_events(
             if to_date:
                 params["toDate"] = to_date
 
-            r = requests.get(
+            data = _get_json(
                 f"{BASE_URL}/events/geteventlist/SEARCH",
                 params=params,
-                timeout=_TIMEOUT,
+                allow_empty=True,
             )
-            r.raise_for_status()
-            if not r.text.strip():
+            if data is None:
                 break
-            features = r.json().get("features", [])
+            features = data.get("features", [])
             if not features:
                 break
 
@@ -150,19 +199,13 @@ def get_events(
                     continue
                 seen[row["eventid"]] = row
 
+            if len(features) < page_size:
+                break
             page += 1
 
     if not seen:
-        return gpd.GeoDataFrame(
-            columns=_EVENT_COLS, geometry="geometry", crs="EPSG:4326"
-        )
-
-    df = pd.DataFrame(list(seen.values()))
-    return gpd.GeoDataFrame(
-        df.drop(columns=["lon", "lat"]),
-        geometry=gpd.points_from_xy(df["lon"], df["lat"]),
-        crs="EPSG:4326",
-    )
+        return _to_gdf(pd.DataFrame(columns=_EVENT_ROW_KEYS))
+    return _to_gdf(pd.DataFrame(list(seen.values())))
 
 
 def get_event_detail(eventid: int) -> Dict[str, Any]:
@@ -171,13 +214,10 @@ def get_event_detail(eventid: int) -> Dict[str, Any]:
     Includes the episode list and resource URLs for the timeline and
     per-buffer impact endpoints.
     """
-    r = requests.get(
+    return _get_json(
         f"{BASE_URL}/events/geteventdata",
-        params={"eventtype": "TC", "eventid": eventid},
-        timeout=_TIMEOUT,
+        params={"eventtype": _EVENT_TYPE, "eventid": eventid},
     )
-    r.raise_for_status()
-    return r.json()
 
 
 def get_episode_detail(eventid: int, episodeid: int) -> Dict[str, Any]:
@@ -187,17 +227,14 @@ def get_episode_detail(eventid: int, episodeid: int) -> Dict[str, Any]:
     The structure mirrors :func:`get_event_detail`, but resource URLs
     point to episode-specific data.
     """
-    r = requests.get(
+    return _get_json(
         f"{BASE_URL}/events/getepisodedata",
         params={
-            "eventtype": "TC",
+            "eventtype": _EVENT_TYPE,
             "eventid": eventid,
             "episodeid": episodeid,
         },
-        timeout=_TIMEOUT,
     )
-    r.raise_for_status()
-    return r.json()
 
 
 def get_timeline(eventid: int) -> pd.DataFrame:
@@ -210,8 +247,8 @@ def get_timeline(eventid: int) -> pd.DataFrame:
     Returns
     -------
     pandas.DataFrame
-        Sorted by ``advisory_number`` ascending. Empty DataFrame if
-        no timeline exists for the event.
+        Sorted by ``advisory_number`` ascending. Empty DataFrame with
+        the expected columns if no timeline exists for the event.
     """
     detail = get_event_detail(eventid)
     impacts = detail.get("properties", {}).get("impacts", [])
@@ -225,31 +262,18 @@ def get_timeline(eventid: int) -> pd.DataFrame:
 
     if timeline_url is None:
         logger.warning("No timeline found for event %s", eventid)
-        return pd.DataFrame()
+        return pd.DataFrame(columns=_TIMELINE_COLS)
 
-    r = requests.get(timeline_url, timeout=_TIMEOUT)
-    r.raise_for_status()
-    items = r.json().get("channel", {}).get("item", [])
-
-    keep_cols = [
-        "advisory_number",
-        "name",
-        "advisory_datetime",
-        "actual",
-        "current",
-        "alertcolor",
-        "country",
-    ] + _TIMELINE_NUMERIC_COLS
+    items = _get_json(timeline_url).get("channel", {}).get("item", [])
+    if not items:
+        return pd.DataFrame(columns=_TIMELINE_COLS)
 
     rows = []
     for item in items:
-        row = {k: item.get(k) for k in keep_cols}
+        row = {k: item.get(k) for k in _TIMELINE_COLS if k != "storm_status"}
         status = item.get("storm_status", [])
         row["storm_status"] = status[0] if status else None
         rows.append(row)
-
-    if not rows:
-        return pd.DataFrame()
 
     df = pd.DataFrame(rows)
     for col in _TIMELINE_NUMERIC_COLS:
@@ -291,41 +315,11 @@ def get_impact_by_country(
     result: Dict[str, pd.DataFrame] = {}
     for imp in impacts:
         resource = imp.get("resource", {})
-        for key in ("buffer39", "buffer74"):
-            if key not in resource:
+        for key in _BUFFER_KEYS:
+            url = resource.get(key)
+            if not url:
                 continue
-            r = requests.get(resource[key], timeout=_TIMEOUT)
-            r.raise_for_status()
-            datums = r.json().get("datums", [])
-
-            countries = []
-            for datum_group in datums:
-                if datum_group.get("alias") != "alert":
-                    continue
-                for d in datum_group.get("datum", []):
-                    scalars = {
-                        s["name"]: s["value"]
-                        for s in d.get("scalars", {}).get("scalar", [])
-                    }
-                    if "GMI_CNTRY" not in scalars:
-                        continue
-                    countries.append(
-                        {
-                            "iso3": scalars.get("GMI_CNTRY"),
-                            "country": scalars.get("CNTRY_NAME"),
-                            "pop_admin": int(
-                                float(scalars.get("POP_ADMIN", 0))
-                            ),
-                            "pop_affected": int(
-                                float(scalars.get("POP_AFFECTED", 0))
-                            ),
-                            "distance_km": round(
-                                float(scalars.get("distance", 0)), 1
-                            ),
-                        }
-                    )
-
-            df = pd.DataFrame(countries)
+            df = _parse_buffer_response(_get_json(url))
             if aggregate and len(df) > 0:
                 df = (
                     df.groupby(["iso3", "country"], as_index=False)
@@ -338,15 +332,35 @@ def get_impact_by_country(
     return result
 
 
-def _event_feature_to_row(
-    feature: Dict[str, Any],
-) -> Dict[str, Any]:
+def _parse_buffer_response(data: Dict[str, Any]) -> pd.DataFrame:
+    """Parse the GDACS impact-buffer JSON to a country-level DataFrame."""
+    countries = []
+    for datum_group in data.get("datums", []):
+        if datum_group.get("alias") != "alert":
+            continue
+        for d in datum_group.get("datum", []):
+            scalars = {
+                s["name"]: s["value"]
+                for s in d.get("scalars", {}).get("scalar", [])
+            }
+            if "GMI_CNTRY" not in scalars:
+                continue
+            countries.append(
+                {
+                    "iso3": scalars.get("GMI_CNTRY"),
+                    "country": scalars.get("CNTRY_NAME"),
+                    "pop_admin": int(float(scalars.get("POP_ADMIN", 0))),
+                    "pop_affected": int(float(scalars.get("POP_AFFECTED", 0))),
+                    "distance_km": round(float(scalars.get("distance", 0)), 1),
+                }
+            )
+    return pd.DataFrame(countries)
+
+
+def _event_feature_to_row(feature: Dict[str, Any]) -> Dict[str, Any]:
     """Flatten a GDACS event feature JSON to a row dict."""
     p = feature.get("properties", {})
-    coords = feature.get("geometry", {}).get("coordinates") or [
-        None,
-        None,
-    ]
+    coords = feature.get("geometry", {}).get("coordinates") or [None, None]
     severity = p.get("severitydata") or {}
     return {
         "eventid": int(p["eventid"]),
@@ -361,6 +375,6 @@ def _event_feature_to_row(
         "severity_kmh": severity.get("severity"),
         "severity_text": severity.get("severitytext"),
         "source": p.get("source", ""),
-        "lon": coords[0],
-        "lat": coords[1],
+        "longitude": coords[0],
+        "latitude": coords[1],
     }

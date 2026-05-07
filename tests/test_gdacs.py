@@ -8,9 +8,8 @@ orchestration functions (get_events, get_timeline,
 get_impact_by_country) replace requests.get with a dispatch callable
 that returns canned JSON keyed off URL + params.
 
-Mocking at requests.get is intentional: it remains the actual HTTP
-boundary in both the pre- and post-simplify versions of gdacs.py,
-so these tests survive the upcoming refactor.
+Mocking at gdacs._get_json is the canonical HTTP boundary inside
+the module — every public function routes its requests through it.
 """
 
 import pandas as pd
@@ -20,32 +19,18 @@ from shapely.geometry import Point
 from ocha_lens.datasources import gdacs
 
 
-class _FakeResponse:
-    """Minimal stand-in for requests.Response used across tests."""
-
-    def __init__(self, json_data):
-        self._json = json_data
-        self.text = "{}" if json_data is not None else ""
-
-    def raise_for_status(self):
-        pass
-
-    def json(self):
-        return self._json
-
-
 def _install_fake_get(monkeypatch, dispatch):
-    """Replace requests.get in the gdacs module with a dispatcher.
+    """Replace gdacs._get_json with a dispatcher returning canned JSON.
 
-    `dispatch(url, params)` should return the JSON-decoded body the
-    fake response will surface. Tests that need to vary response
-    bodies between calls keep state inside the dispatch closure.
+    `dispatch(url, params)` should return the parsed-JSON dict the
+    test wants to surface for that call. Tests that need to vary
+    responses between calls keep state inside the dispatch closure.
     """
 
-    def fake_get(url, params=None, timeout=None, **kwargs):
-        return _FakeResponse(dispatch(url, params))
+    def fake_get_json(url, params=None, **kwargs):
+        return dispatch(url, params)
 
-    monkeypatch.setattr(gdacs.requests, "get", fake_get)
+    monkeypatch.setattr(gdacs, "_get_json", fake_get_json)
 
 
 # ---------------------------------------------------------------------------
@@ -192,14 +177,12 @@ def test_event_feature_to_row_name_fallback_chain():
 
 
 def test_event_feature_to_row_geometry_coords_preserved():
-    """Coordinates from feature.geometry survive into the row dict."""
+    """Coordinates from feature.geometry survive into the row dict
+    under the keys consumed by `_to_gdf` (longitude/latitude)."""
     feat = _sample_feature(lon=-79.5, lat=23.1)
     row = gdacs._event_feature_to_row(feat)
-    # Current implementation uses lon/lat keys; if simplify renames to
-    # longitude/latitude, this test will fail and that test commit
-    # should update the assertion.
-    assert row["lon"] == -79.5
-    assert row["lat"] == 23.1
+    assert row["longitude"] == -79.5
+    assert row["latitude"] == 23.1
 
 
 # ---------------------------------------------------------------------------
@@ -576,16 +559,6 @@ def test_get_timeline_parses_advisories_with_coercion_and_sort(monkeypatch):
     assert df.iloc[0]["storm_status"] == "Tropical Storm"
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Current code returns bare pd.DataFrame() when no timeline URL is "
-        "found; simplify will fix this to return a DataFrame with the "
-        "expected columns so callers can chain df['advisory_number'] "
-        "without KeyError. This test pins the desired post-simplify "
-        "behavior."
-    ),
-    strict=True,
-)
 def test_get_timeline_no_url_returns_dataframe_with_columns(monkeypatch):
     detail = _event_detail()  # empty resource, no timeline URL
 
