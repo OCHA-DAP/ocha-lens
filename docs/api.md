@@ -77,3 +77,9 @@ The `nhc` module provides utilities for downloading, loading, and processing Nat
 ```{eval-rst}
 .. autofunction:: ocha_lens.nhc.get_storms
 ```
+
+### Wind Speed Probability
+
+```{eval-rst}
+.. autofunction:: ocha_lens.nhc.get_wsp
+```
