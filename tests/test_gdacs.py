@@ -85,25 +85,24 @@ def _event_detail(timeline_url=None, buffer_urls=None):
     return {"properties": {"impacts": [{"resource": resource}]}}
 
 
-def _buffer_response(country_rows):
-    """GDACS impact-buffer response with the given scalar rows."""
+def _datum_group(alias, rows):
+    """One datum_group with the given alias and scalar rows."""
     return {
-        "datums": [
+        "alias": alias,
+        "datum": [
             {
-                "alias": "alert",
-                "datum": [
-                    {
-                        "scalars": {
-                            "scalar": [
-                                {"name": k, "value": v} for k, v in row.items()
-                            ]
-                        }
-                    }
-                    for row in country_rows
-                ],
+                "scalars": {
+                    "scalar": [{"name": k, "value": v} for k, v in row.items()]
+                }
             }
-        ]
+            for row in rows
+        ],
     }
+
+
+def _buffer_response(*datum_groups):
+    """GDACS impact-buffer response with one or more datum groups."""
+    return {"datums": list(datum_groups)}
 
 
 def _timeline_response(items):
@@ -304,7 +303,7 @@ def test_get_events_geometry_built_from_coords(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# get_impact_by_country
+# get_exposure_adm0 and get_exposure_adm1
 # ---------------------------------------------------------------------------
 
 
@@ -314,189 +313,168 @@ _BUFFER_URLS = {
 }
 
 
-def test_get_impact_by_country_aggregates_by_iso3(monkeypatch):
-    """aggregate=True: multiple admin rows for one country collapse into
-    a single row with summed pop_affected.
-    """
+_ADM0_ROW = {
+    "ISO_3DIGIT": "USA",
+    "ISO_2DIGIT": "US",
+    "CNTRY_NAME": "United States",
+    "GMI_CNTRY": "USA",
+    "POP_AFFECTED": 12059178,
+    "distance": 12.345,
+}
+
+_ADM1_ROW = {
+    "GMI_CNTRY": "USA",
+    "CNTRY_NAME": "United States",
+    "FIPS_ADMIN": "US05",
+    "GMI_ADMIN": "USA-ARK",
+    "ADMIN_NAME": "Arkansas",
+    "TYPE_ENG": "State",
+    "POP_ADMIN": 3000000,
+    "POP_AFFECTED": 161050,
+    "distance": 50.789,
+}
+
+
+def _install_buffer_fixture(monkeypatch, *datum_groups):
+    """Common fake: event detail + a single buffer response."""
     detail = _event_detail(buffer_urls=_BUFFER_URLS)
-    buf = _buffer_response(
-        [
-            {
-                "GMI_CNTRY": "USA",
-                "CNTRY_NAME": "United States",
-                "POP_ADMIN": 1000,
-                "POP_AFFECTED": 100,
-                "distance": 50.0,
-            },
-            {
-                "GMI_CNTRY": "USA",
-                "CNTRY_NAME": "United States",
-                "POP_ADMIN": 1000,
-                "POP_AFFECTED": 200,
-                "distance": 75.0,
-            },
-            {
-                "GMI_CNTRY": "MEX",
-                "CNTRY_NAME": "Mexico",
-                "POP_ADMIN": 500,
-                "POP_AFFECTED": 50,
-                "distance": 100.0,
-            },
-        ]
-    )
+    buf = _buffer_response(*datum_groups)
 
     def fake(url, params=None, **kwargs):
-        return detail if "geteventdata" in url else buf
+        if "geteventdata" in url or "getepisodedata" in url:
+            return detail
+        return buf
 
     _install_fake_get(monkeypatch, fake)
-    result = gdacs.get_impact_by_country(eventid=1, aggregate=True)
+
+
+# ----- get_exposure_adm0 -----
+
+
+def test_get_exposure_adm0_reads_country_alias(monkeypatch):
+    """ADM0 builder reads alias='country' directly (no aggregation).
+    Uses ISO_3DIGIT for iso3 — the canonical 3-letter ISO code from
+    the GDACS country rollup, not the proprietary GMI_CNTRY.
+    """
+    _install_buffer_fixture(monkeypatch, _datum_group("country", [_ADM0_ROW]))
+    result = gdacs.get_exposure_adm0(eventid=1)
     assert set(result.keys()) == {"buffer39", "buffer74"}
 
     df = result["buffer39"]
-    usa = df[df["iso3"] == "USA"]
-    assert len(usa) == 1
-    assert usa.iloc[0]["pop_affected"] == 300
-    # MEX preserved as separate row
-    mex = df[df["iso3"] == "MEX"]
-    assert len(mex) == 1
-    assert mex.iloc[0]["pop_affected"] == 50
+    assert len(df) == 1
+    assert df.iloc[0]["iso3"] == "USA"
+    assert df.iloc[0]["country"] == "United States"
+    assert df.iloc[0]["pop_affected"] == 12059178
 
 
-def test_get_impact_by_country_skips_rows_without_gmi_cntry(monkeypatch):
-    """The "alert" alias mixes country-level and sub-country rows. The
-    parser keeps only those with GMI_CNTRY (country-level).
+def test_get_exposure_adm0_ignores_alert_alias(monkeypatch):
+    """When only alias='alert' is present (no country rollup), ADM0
+    builder returns no rows — it does NOT fall back to aggregating
+    the ADM1 grain, which was the old behavior we're moving away from.
     """
-    detail = _event_detail(buffer_urls=_BUFFER_URLS)
-    buf = {
-        "datums": [
-            {
-                "alias": "alert",
-                "datum": [
-                    # country-level, kept
-                    {
-                        "scalars": {
-                            "scalar": [
-                                {"name": "GMI_CNTRY", "value": "USA"},
-                                {
-                                    "name": "CNTRY_NAME",
-                                    "value": "United States",
-                                },
-                                {"name": "POP_ADMIN", "value": 1000},
-                                {"name": "POP_AFFECTED", "value": 100},
-                                {"name": "distance", "value": 0},
-                            ]
-                        }
-                    },
-                    # sub-country (FIPS_ADMIN, no GMI_CNTRY) — skipped
-                    {
-                        "scalars": {
-                            "scalar": [
-                                {"name": "FIPS_ADMIN", "value": "USA-NY"},
-                                {"name": "POP_AFFECTED", "value": 50},
-                            ]
-                        }
-                    },
-                ],
-            }
-        ]
-    }
-
-    def fake(url, params=None, **kwargs):
-        return detail if "geteventdata" in url else buf
-
-    _install_fake_get(monkeypatch, fake)
-    result = gdacs.get_impact_by_country(eventid=1)
-    assert len(result["buffer39"]) == 1
-    assert result["buffer39"].iloc[0]["iso3"] == "USA"
-
-
-def test_get_impact_by_country_skips_non_alert_alias(monkeypatch):
-    """Only datum_groups with alias=='alert' are parsed. Pins the current
-    interpretation (zack's). NOTE: hannah's pipeline reads alias=='country'
-    for ADM0 — this discrepancy is open work for a follow-up commit.
-    """
-    detail = _event_detail(buffer_urls=_BUFFER_URLS)
-    buf = {
-        "datums": [
-            {
-                "alias": "country",  # not "alert" — should be skipped
-                "datum": [
-                    {
-                        "scalars": {
-                            "scalar": [
-                                {"name": "GMI_CNTRY", "value": "USA"},
-                                {
-                                    "name": "CNTRY_NAME",
-                                    "value": "United States",
-                                },
-                                {"name": "POP_ADMIN", "value": 1},
-                                {"name": "POP_AFFECTED", "value": 1},
-                                {"name": "distance", "value": 0},
-                            ]
-                        }
-                    }
-                ],
-            }
-        ]
-    }
-
-    def fake(url, params=None, **kwargs):
-        return detail if "geteventdata" in url else buf
-
-    _install_fake_get(monkeypatch, fake)
-    result = gdacs.get_impact_by_country(eventid=1)
+    _install_buffer_fixture(monkeypatch, _datum_group("alert", [_ADM1_ROW]))
+    result = gdacs.get_exposure_adm0(eventid=1)
     assert len(result["buffer39"]) == 0
 
 
-def test_get_impact_by_country_aggregate_false_keeps_all_rows(monkeypatch):
-    detail = _event_detail(buffer_urls=_BUFFER_URLS)
-    buf = _buffer_response(
-        [
-            {
-                "GMI_CNTRY": "USA",
-                "CNTRY_NAME": "USA",
-                "POP_ADMIN": 1,
-                "POP_AFFECTED": 100,
-                "distance": 0,
-            },
-            {
-                "GMI_CNTRY": "USA",
-                "CNTRY_NAME": "USA",
-                "POP_ADMIN": 1,
-                "POP_AFFECTED": 200,
-                "distance": 0,
-            },
-        ]
+def test_get_exposure_adm0_distance_rounded_to_one_decimal(monkeypatch):
+    _install_buffer_fixture(monkeypatch, _datum_group("country", [_ADM0_ROW]))
+    result = gdacs.get_exposure_adm0(eventid=1)
+    assert result["buffer39"].iloc[0]["distance_km"] == 12.3
+
+
+def test_get_exposure_adm0_empty_returns_typed_dataframe(monkeypatch):
+    """No country rows → empty DataFrame with expected columns so
+    callers can chain df['iso3'] without KeyError."""
+    _install_buffer_fixture(monkeypatch, _datum_group("country", []))
+    result = gdacs.get_exposure_adm0(eventid=1)
+    df = result["buffer39"]
+    assert len(df) == 0
+    assert list(df.columns) == [
+        "iso3",
+        "country",
+        "pop_affected",
+        "distance_km",
+    ]
+
+
+# ----- get_exposure_adm1 -----
+
+
+def test_get_exposure_adm1_reads_alert_alias(monkeypatch):
+    """ADM1 builder reads alias='alert' and extracts the full admin
+    field set (fips/gmi/name/type) plus the parent country attachment.
+    """
+    _install_buffer_fixture(monkeypatch, _datum_group("alert", [_ADM1_ROW]))
+    result = gdacs.get_exposure_adm1(eventid=1)
+    df = result["buffer39"]
+    assert len(df) == 1
+    row = df.iloc[0]
+    assert row["iso3"] == "USA"
+    assert row["country"] == "United States"
+    assert row["fips_admin"] == "US05"
+    assert row["gmi_admin"] == "USA-ARK"
+    assert row["admin_name"] == "Arkansas"
+    assert row["admin_type"] == "State"
+    assert row["pop_admin"] == 3000000
+    assert row["pop_affected"] == 161050
+    assert row["distance_km"] == 50.8
+
+
+def test_get_exposure_adm1_ignores_country_alias(monkeypatch):
+    """ADM1 builder must NOT read alias='country' — that's the ADM0
+    rollup, different grain entirely."""
+    _install_buffer_fixture(monkeypatch, _datum_group("country", [_ADM0_ROW]))
+    result = gdacs.get_exposure_adm1(eventid=1)
+    assert len(result["buffer39"]) == 0
+
+
+def test_get_exposure_adm1_skips_rows_without_gmi_admin(monkeypatch):
+    """Defensive: if a row under alias='alert' lacks GMI_ADMIN (which
+    shouldn't happen in current GDACS responses but might if schema
+    evolves to include country-only rows under the alert alias),
+    skip it rather than emit a row missing core identifiers.
+    """
+    bad_row = {k: v for k, v in _ADM1_ROW.items() if k != "GMI_ADMIN"}
+    _install_buffer_fixture(
+        monkeypatch, _datum_group("alert", [_ADM1_ROW, bad_row])
     )
+    result = gdacs.get_exposure_adm1(eventid=1)
+    assert len(result["buffer39"]) == 1
+
+
+def test_get_exposure_adm1_empty_returns_typed_dataframe(monkeypatch):
+    _install_buffer_fixture(monkeypatch, _datum_group("alert", []))
+    result = gdacs.get_exposure_adm1(eventid=1)
+    df = result["buffer39"]
+    assert len(df) == 0
+    assert "fips_admin" in df.columns
+    assert "admin_name" in df.columns
+    assert "pop_admin" in df.columns
+
+
+# ----- episodeid routing (shared between adm0 and adm1) -----
+
+
+def test_exposure_with_episodeid_routes_via_episode_detail(monkeypatch):
+    """Passing episodeid must route detail-fetch to getepisodedata,
+    not geteventdata — historical episode snapshots can differ from
+    the current/latest data.
+    """
+    detail = _event_detail(buffer_urls=_BUFFER_URLS)
+    buf = _buffer_response(_datum_group("country", [_ADM0_ROW]))
+    seen_endpoints = []
 
     def fake(url, params=None, **kwargs):
-        return detail if "geteventdata" in url else buf
+        seen_endpoints.append(url)
+        if "getepisodedata" in url or "geteventdata" in url:
+            return detail
+        return buf
 
     _install_fake_get(monkeypatch, fake)
-    result = gdacs.get_impact_by_country(eventid=1, aggregate=False)
-    assert len(result["buffer39"]) == 2
-
-
-def test_get_impact_by_country_distance_rounded_to_one_decimal(monkeypatch):
-    detail = _event_detail(buffer_urls=_BUFFER_URLS)
-    buf = _buffer_response(
-        [
-            {
-                "GMI_CNTRY": "USA",
-                "CNTRY_NAME": "USA",
-                "POP_ADMIN": 1,
-                "POP_AFFECTED": 1,
-                "distance": 123.4567,
-            }
-        ]
-    )
-
-    def fake(url, params=None, **kwargs):
-        return detail if "geteventdata" in url else buf
-
-    _install_fake_get(monkeypatch, fake)
-    result = gdacs.get_impact_by_country(eventid=1, aggregate=False)
-    assert result["buffer39"].iloc[0]["distance_km"] == 123.5
+    gdacs.get_exposure_adm0(eventid=1, episodeid=42)
+    assert any("getepisodedata" in u for u in seen_endpoints)
+    assert not any("geteventdata" in u for u in seen_endpoints)
 
 
 # ---------------------------------------------------------------------------

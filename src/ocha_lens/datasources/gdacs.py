@@ -285,31 +285,86 @@ def get_timeline(eventid: int) -> pd.DataFrame:
     return df.sort_values("advisory_number").reset_index(drop=True)
 
 
-def get_impact_by_country(
-    eventid: int, aggregate: bool = True
-) -> Dict[str, pd.DataFrame]:
-    """Fetch population exposure per wind buffer for one TC event.
+_ADM0_COLUMNS = ["iso3", "country", "pop_affected", "distance_km"]
 
-    Returns country-level (or admin-level) population exposed within
-    the cumulative wind footprint across the full storm track.
+_ADM1_COLUMNS = [
+    "iso3",
+    "country",
+    "fips_admin",
+    "gmi_admin",
+    "admin_name",
+    "admin_type",
+    "pop_admin",
+    "pop_affected",
+    "distance_km",
+]
+
+
+def get_exposure_adm0(
+    eventid: int, episodeid: Optional[int] = None
+) -> Dict[str, pd.DataFrame]:
+    """Fetch country-level population exposure per wind buffer.
+
+    Reads ``datums[alias='country']`` from each buffer's impact JSON —
+    the canonical ADM0 rollup. One row per affected country, per
+    buffer.
 
     Note: only returns data for events ~2022 onward. Earlier events
-    return zeros. Use :func:`get_timeline` for 2015+ coverage.
+    return empty results. Use :func:`get_timeline` for 2015+ coverage.
 
     Parameters
     ----------
     eventid : int
-    aggregate : bool, default True
-        Sum to country level if True; per-admin-unit rows if False.
+    episodeid : int, optional
+        If provided, fetches that specific episode's snapshot via
+        :func:`get_episode_detail`. Otherwise uses the event-level
+        resource URLs from :func:`get_event_detail` (latest snapshot).
 
     Returns
     -------
     dict
         Maps buffer key (``"buffer39"`` or ``"buffer74"``) to a
-        DataFrame with columns ``iso3``, ``country``, ``pop_admin``,
-        ``pop_affected``, ``distance_km``.
+        DataFrame with columns ``iso3``, ``country``, ``pop_affected``,
+        ``distance_km``.
     """
-    detail = get_event_detail(eventid)
+    return _exposure_per_buffer(eventid, episodeid, _parse_adm0)
+
+
+def get_exposure_adm1(
+    eventid: int, episodeid: Optional[int] = None
+) -> Dict[str, pd.DataFrame]:
+    """Fetch ADM1-grain population exposure per wind buffer.
+
+    Reads ``datums[alias='alert']`` from each buffer's impact JSON.
+    One row per affected sub-national admin unit, per buffer. Country
+    identifiers are attached so callers can roll up to ADM0 if needed.
+
+    Parameters
+    ----------
+    eventid : int
+    episodeid : int, optional
+        Same semantics as :func:`get_exposure_adm0`.
+
+    Returns
+    -------
+    dict
+        Maps buffer key to a DataFrame with columns ``iso3``,
+        ``country``, ``fips_admin``, ``gmi_admin``, ``admin_name``,
+        ``admin_type``, ``pop_admin``, ``pop_affected``,
+        ``distance_km``.
+    """
+    return _exposure_per_buffer(eventid, episodeid, _parse_adm1)
+
+
+def _exposure_per_buffer(
+    eventid: int,
+    episodeid: Optional[int],
+    parse,
+) -> Dict[str, pd.DataFrame]:
+    if episodeid is None:
+        detail = get_event_detail(eventid)
+    else:
+        detail = get_episode_detail(eventid, episodeid)
     impacts = detail.get("properties", {}).get("impacts", [])
 
     result: Dict[str, pd.DataFrame] = {}
@@ -319,42 +374,64 @@ def get_impact_by_country(
             url = resource.get(key)
             if not url:
                 continue
-            df = _parse_buffer_response(_get_json(url))
-            if aggregate and len(df) > 0:
-                df = (
-                    df.groupby(["iso3", "country"], as_index=False)
-                    .agg({"pop_affected": "sum"})
-                    .sort_values("pop_affected", ascending=False)
-                    .reset_index(drop=True)
-                )
-            result[key] = df
-
+            result[key] = parse(_get_json(url))
     return result
 
 
-def _parse_buffer_response(data: Dict[str, Any]) -> pd.DataFrame:
-    """Parse the GDACS impact-buffer JSON to a country-level DataFrame."""
-    countries = []
-    for datum_group in data.get("datums", []):
-        if datum_group.get("alias") != "alert":
+def _parse_adm0(data: Dict[str, Any]) -> pd.DataFrame:
+    """Read ``alias='country'`` (ADM0 rollups) from a buffer JSON."""
+    rows = []
+    for dg in data.get("datums", []):
+        if dg.get("alias") != "country":
             continue
-        for d in datum_group.get("datum", []):
-            scalars = {
-                s["name"]: s["value"]
-                for s in d.get("scalars", {}).get("scalar", [])
-            }
-            if "GMI_CNTRY" not in scalars:
+        for d in dg.get("datum", []):
+            scalars = _scalars(d)
+            iso3 = scalars.get("ISO_3DIGIT")
+            if not iso3:
                 continue
-            countries.append(
+            rows.append(
+                {
+                    "iso3": iso3,
+                    "country": scalars.get("CNTRY_NAME"),
+                    "pop_affected": int(float(scalars.get("POP_AFFECTED", 0))),
+                    "distance_km": round(float(scalars.get("distance", 0)), 1),
+                }
+            )
+    return pd.DataFrame(rows, columns=_ADM0_COLUMNS)
+
+
+def _parse_adm1(data: Dict[str, Any]) -> pd.DataFrame:
+    """Read ``alias='alert'`` (ADM1 grain) from a buffer JSON."""
+    rows = []
+    for dg in data.get("datums", []):
+        if dg.get("alias") != "alert":
+            continue
+        for d in dg.get("datum", []):
+            scalars = _scalars(d)
+            if not scalars.get("GMI_ADMIN"):
+                continue
+            rows.append(
                 {
                     "iso3": scalars.get("GMI_CNTRY"),
                     "country": scalars.get("CNTRY_NAME"),
+                    "fips_admin": scalars.get("FIPS_ADMIN"),
+                    "gmi_admin": scalars.get("GMI_ADMIN"),
+                    "admin_name": scalars.get("ADMIN_NAME"),
+                    "admin_type": scalars.get("TYPE_ENG"),
                     "pop_admin": int(float(scalars.get("POP_ADMIN", 0))),
                     "pop_affected": int(float(scalars.get("POP_AFFECTED", 0))),
                     "distance_km": round(float(scalars.get("distance", 0)), 1),
                 }
             )
-    return pd.DataFrame(countries)
+    return pd.DataFrame(rows, columns=_ADM1_COLUMNS)
+
+
+def _scalars(datum: Dict[str, Any]) -> Dict[str, Any]:
+    """Flatten a GDACS ``scalars`` container into a name→value dict."""
+    return {
+        s["name"]: s["value"]
+        for s in datum.get("scalars", {}).get("scalar", [])
+    }
 
 
 def _event_feature_to_row(feature: Dict[str, Any]) -> Dict[str, Any]:
