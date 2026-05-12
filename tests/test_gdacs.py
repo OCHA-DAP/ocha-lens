@@ -114,19 +114,36 @@ def _timeline_response(items):
 # ---------------------------------------------------------------------------
 
 
-def test_event_feature_to_row_minimal():
-    """Minimal feature: eventid coerced to int, missing fields default cleanly."""
-    feat = {
-        "properties": {"eventid": "999"},  # API often returns string ids
-        "geometry": {"coordinates": [50.0, 10.0]},
-    }
+def test_event_feature_to_row_with_all_required_fields():
+    """A feature with all required fields populates the row dict
+    correctly. eventid is coerced from string to int."""
+    feat = _sample_feature(eventid="999")
     row = gdacs._event_feature_to_row(feat)
     assert row["eventid"] == 999
     assert isinstance(row["eventid"], int)
-    assert row["name"] == ""
     assert row["is_current"] is False
-    assert row["severity_kmh"] is None
-    assert row["severity_text"] is None
+    assert row["severity_kmh"] == 100  # _sample_feature default
+
+
+def test_event_feature_to_row_missing_eventname_raises():
+    """Missing `eventname` is a GDACS contract break — raise KeyError
+    rather than silently using the empty string. If GDACS ever
+    renames or drops this field we want to find out, not ingest
+    nameless records."""
+    feat = _sample_feature()
+    del feat["properties"]["eventname"]
+    with pytest.raises(KeyError):
+        gdacs._event_feature_to_row(feat)
+
+
+def test_event_feature_to_row_missing_geometry_raises():
+    """Missing geometry coordinates raise rather than emit a row
+    with (lon=None, lat=None) — silent NaN geometries are bad data
+    we don't want to ingest."""
+    feat = _sample_feature()
+    del feat["geometry"]
+    with pytest.raises(KeyError):
+        gdacs._event_feature_to_row(feat)
 
 
 def test_event_feature_to_row_severitydata_none_does_not_crash():
@@ -164,15 +181,16 @@ def test_event_feature_to_row_iscurrent_string_to_bool(
     assert gdacs._event_feature_to_row(feat)["is_current"] is expected
 
 
-def test_event_feature_to_row_name_fallback_chain():
-    """`eventname` wins; if missing, falls back to `name`; else empty string."""
+def test_event_feature_to_row_optional_iso3_country_can_be_null():
+    """iso3 and country can legitimately be missing on some GDACS
+    events (e.g., very small or open-ocean storms). These are not
+    required — caller can handle None."""
     feat = _sample_feature()
-    feat["properties"]["eventname"] = None
-    feat["properties"]["name"] = "fallback-name"
-    assert gdacs._event_feature_to_row(feat)["name"] == "fallback-name"
-
-    feat["properties"]["name"] = None
-    assert gdacs._event_feature_to_row(feat)["name"] == ""
+    del feat["properties"]["iso3"]
+    del feat["properties"]["country"]
+    row = gdacs._event_feature_to_row(feat)
+    assert row["iso3"] is None
+    assert row["country"] is None
 
 
 def test_event_feature_to_row_geometry_coords_preserved():
@@ -353,8 +371,9 @@ def _install_buffer_fixture(monkeypatch, *datum_groups):
 
 def test_get_exposure_adm0_reads_country_alias(monkeypatch):
     """ADM0 builder reads alias='country' directly (no aggregation).
-    Uses ISO_3DIGIT for iso3 — the canonical 3-letter ISO code from
-    the GDACS country rollup, not the proprietary GMI_CNTRY.
+    The iso3 column holds GDACS' native GMI_CNTRY — which is the
+    valid ISO3 for sovereign states but X-prefixed for territories
+    (caller applies to_iso3 for standardization).
     """
     _install_buffer_fixture(monkeypatch, _datum_group("country", [_ADM0_ROW]))
     result = gdacs.get_exposure_adm0(eventid=1)
@@ -429,18 +448,17 @@ def test_get_exposure_adm1_ignores_country_alias(monkeypatch):
     assert len(result["buffer39"]) == 0
 
 
-def test_get_exposure_adm1_skips_rows_without_gmi_admin(monkeypatch):
-    """Defensive: if a row under alias='alert' lacks GMI_ADMIN (which
-    shouldn't happen in current GDACS responses but might if schema
-    evolves to include country-only rows under the alert alias),
-    skip it rather than emit a row missing core identifiers.
-    """
+def test_get_exposure_adm1_missing_gmi_admin_raises(monkeypatch):
+    """Missing GMI_ADMIN under alias='alert' is a GDACS contract
+    violation — raise KeyError loudly rather than silently skip the
+    row. If GDACS ever changes the alert-alias scalar set, we want
+    to find out, not lose rows quietly."""
     bad_row = {k: v for k, v in _ADM1_ROW.items() if k != "GMI_ADMIN"}
     _install_buffer_fixture(
         monkeypatch, _datum_group("alert", [_ADM1_ROW, bad_row])
     )
-    result = gdacs.get_exposure_adm1(eventid=1)
-    assert len(result["buffer39"]) == 1
+    with pytest.raises(KeyError):
+        gdacs.get_exposure_adm1(eventid=1)
 
 
 def test_get_exposure_adm1_empty_returns_typed_dataframe(monkeypatch):
@@ -537,14 +555,82 @@ def test_get_timeline_parses_advisories_with_coercion_and_sort(monkeypatch):
     assert df.iloc[0]["storm_status"] == "Tropical Storm"
 
 
-def test_get_timeline_no_url_returns_dataframe_with_columns(monkeypatch):
+def test_get_timeline_no_url_raises_no_timeline_error(monkeypatch):
+    """Missing timeline resource raises NoTimelineError loudly so
+    the caller can decide whether to skip or abort. Previously this
+    returned an empty DataFrame which was indistinguishable from
+    'event has timeline but zero advisories' — a meaningful
+    distinction the caller now gets."""
     detail = _event_detail()  # empty resource, no timeline URL
 
     def fake(url, params=None, **kwargs):
         return detail
 
     _install_fake_get(monkeypatch, fake)
-    df = gdacs.get_timeline(eventid=1)
-    assert "advisory_number" in df.columns
-    assert "wind_speed" in df.columns
-    assert len(df) == 0
+    with pytest.raises(gdacs.NoTimelineError):
+        gdacs.get_timeline(eventid=1)
+
+
+# ---------------------------------------------------------------------------
+# latest_episode_id
+# ---------------------------------------------------------------------------
+
+
+def test_latest_episode_id_extracts_from_url():
+    """GDACS embeds the episode id in the `details` URL query param.
+    The helper pulls it out reliably for the last entry in
+    `properties.episodes`."""
+    detail = {
+        "properties": {
+            "episodes": [
+                {"details": "https://gdacs/api/foo?eventid=1&episodeid=5&x=1"},
+                {"details": "https://gdacs/api/foo?eventid=1&episodeid=22&x=1"},
+            ]
+        }
+    }
+    assert gdacs.latest_episode_id(detail) == 22
+
+
+def test_latest_episode_id_no_episodes_raises():
+    """Event with empty episodes list raises NoEpisodesError —
+    legitimately new event the caller may want to handle, but
+    distinct from a malformed payload."""
+    with pytest.raises(gdacs.NoEpisodesError):
+        gdacs.latest_episode_id({"properties": {"episodes": []}})
+
+
+def test_latest_episode_id_missing_properties_raises():
+    """Event detail without the expected `properties` or
+    `episodes` keys raises KeyError — that's a GDACS contract
+    break, not a normal 'no episodes yet' case."""
+    with pytest.raises(KeyError):
+        gdacs.latest_episode_id({"properties": {}})
+    with pytest.raises(KeyError):
+        gdacs.latest_episode_id({})
+
+
+def test_to_iso3_passes_through_standard_codes():
+    """Most GMI_CNTRY values are already valid ISO 3166-1 alpha-3 —
+    to_iso3 must not transform them."""
+    assert gdacs.to_iso3("USA") == "USA"
+    assert gdacs.to_iso3("MEX") == "MEX"
+    assert gdacs.to_iso3("BHS") == "BHS"
+
+
+def test_to_iso3_remaps_proprietary_codes():
+    """X-prefixed GDACS codes for territories/dependencies get
+    remapped to the standard ISO 3166-1 code. New mappings get
+    added as we encounter them in real data."""
+    assert gdacs.to_iso3("XJE") == "JEY"   # Jersey
+
+
+def test_latest_episode_id_malformed_url_raises():
+    """If GDACS's details URL doesn't contain `episodeid=`, raise
+    EpisodeUrlFormatError — likely a GDACS API contract change."""
+    detail = {
+        "properties": {
+            "episodes": [{"details": "https://gdacs/api/foo?eventid=1"}]
+        }
+    }
+    with pytest.raises(gdacs.EpisodeUrlFormatError):
+        gdacs.latest_episode_id(detail)
