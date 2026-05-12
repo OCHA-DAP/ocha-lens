@@ -739,24 +739,24 @@ def _parse_adm1(data: Dict[str, Any]) -> pd.DataFrame:
 _GDACS_MISSING_SENTINEL = -99999
 
 
-def _to_nullable_int(value: Any) -> Optional[int]:
-    """Cast a scalar to int, preserving None for missing/empty/sentinel."""
+def _to_nullable(value: Any, coerce) -> Any:
+    """Cast a GDACS scalar via ``coerce(float(value))``, normalizing
+    None, empty string, and the -99999 sentinel to None. ``coerce``
+    is the type-specific cast (e.g. ``int`` or ``lambda v: round(v, 1)``)."""
     if value is None or value == "":
         return None
-    n = int(float(value))
-    if n == _GDACS_MISSING_SENTINEL:
+    out = coerce(float(value))
+    if out == _GDACS_MISSING_SENTINEL:
         return None
-    return n
+    return out
+
+
+def _to_nullable_int(value: Any) -> Optional[int]:
+    return _to_nullable(value, int)
 
 
 def _to_nullable_round(value: Any) -> Optional[float]:
-    """Cast a scalar to rounded float, preserving None for missing/empty/sentinel."""
-    if value is None or value == "":
-        return None
-    f = round(float(value), 1)
-    if int(f) == _GDACS_MISSING_SENTINEL:
-        return None
-    return f
+    return _to_nullable(value, lambda v: round(v, 1))
 
 
 def _scalars(datum: Dict[str, Any]) -> Dict[str, Any]:
@@ -771,11 +771,11 @@ def _event_feature_to_row(feature: Dict[str, Any]) -> Dict[str, Any]:
     """Flatten a GDACS event feature JSON to a row dict.
 
     Required fields (eventid, eventname, geometry coordinates,
-    fromdate/todate, alertlevel) use direct subscripts — KeyError
-    if GDACS drops them. Optional/metadata fields (iso3, country,
-    severitydata) use ``.get`` returning None — these are
-    legitimately absent for some events and downstream code is
-    expected to handle null.
+    fromdate/todate, alertlevel, episodealertlevel, iscurrent) use
+    direct subscripts — KeyError if GDACS drops them. Optional/
+    metadata fields (iso3, country, severitydata, source) use
+    ``.get`` returning None — these are legitimately absent for
+    some events and downstream code is expected to handle null.
     """
     p = feature["properties"]
     coords = feature["geometry"]["coordinates"]

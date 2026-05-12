@@ -1,5 +1,5 @@
 """Unit tests for the GDACS↔NHC ATCF matching function in
-ocha_lens.utils.storm.
+ocha_lens.datasources.gdacs.
 
 The matching algorithm is a single inner-join on ``valid_time``
 (treating GDACS's ``advisory_datetime`` as a valid_time — that field
