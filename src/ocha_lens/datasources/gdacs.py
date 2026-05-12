@@ -392,12 +392,22 @@ class NoTimelineError(ValueError):
     """
 
 
-def get_timeline(eventid: int) -> pd.DataFrame:
+def get_timeline(
+    eventid: int, detail: Optional[Dict[str, Any]] = None
+) -> pd.DataFrame:
     """Fetch the advisory timeline for one TC event.
 
     Each row is one advisory with position, wind speed, population
     exposure (``pop39``/``pop74``), and quadrant wind radii.
     ``pop39``/``pop74`` are instantaneous snapshots — not cumulative.
+
+    Parameters
+    ----------
+    eventid : int
+    detail : dict, optional
+        Pre-fetched output of :func:`get_event_detail` for this
+        eventid. Pass it to skip the internal detail fetch when the
+        caller already has it (saves one HTTP round-trip).
 
     Raises
     ------
@@ -412,7 +422,8 @@ def get_timeline(eventid: int) -> pd.DataFrame:
         (with expected columns) if the timeline endpoint returns
         no items — pandera validates the row structure either way.
     """
-    detail = get_event_detail(eventid)
+    if detail is None:
+        detail = get_event_detail(eventid)
     impacts = detail["properties"]["impacts"]
 
     timeline_url = None
@@ -467,7 +478,9 @@ _ADM1_COLUMNS = [
 
 
 def get_exposure_adm0(
-    eventid: int, episodeid: Optional[int] = None
+    eventid: int,
+    episodeid: Optional[int] = None,
+    detail: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, pd.DataFrame]:
     """Fetch country-level population exposure per wind buffer.
 
@@ -485,6 +498,11 @@ def get_exposure_adm0(
         If provided, fetches that specific episode's snapshot via
         :func:`get_episode_detail`. Otherwise uses the event-level
         resource URLs from :func:`get_event_detail` (latest snapshot).
+    detail : dict, optional
+        Pre-fetched output of :func:`get_event_detail`. Pass it to
+        skip the internal detail fetch on the event-level path.
+        Mutually exclusive with ``episodeid`` — passing both raises
+        ``ValueError`` (the two args describe different snapshots).
 
     Returns
     -------
@@ -493,11 +511,15 @@ def get_exposure_adm0(
         DataFrame with columns ``iso3``, ``country``, ``pop_affected``,
         ``distance_km``.
     """
-    return _exposure_per_buffer(eventid, episodeid, _parse_adm0)
+    return _exposure_per_buffer(
+        eventid, episodeid, _parse_adm0, detail=detail
+    )
 
 
 def get_exposure_adm1(
-    eventid: int, episodeid: Optional[int] = None
+    eventid: int,
+    episodeid: Optional[int] = None,
+    detail: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, pd.DataFrame]:
     """Fetch ADM1-grain population exposure per wind buffer.
 
@@ -510,6 +532,8 @@ def get_exposure_adm1(
     eventid : int
     episodeid : int, optional
         Same semantics as :func:`get_exposure_adm0`.
+    detail : dict, optional
+        Same semantics as :func:`get_exposure_adm0`.
 
     Returns
     -------
@@ -519,7 +543,9 @@ def get_exposure_adm1(
         ``admin_type``, ``pop_admin``, ``pop_affected``,
         ``distance_km``.
     """
-    return _exposure_per_buffer(eventid, episodeid, _parse_adm1)
+    return _exposure_per_buffer(
+        eventid, episodeid, _parse_adm1, detail=detail
+    )
 
 
 def match_to_atcf(
@@ -616,11 +642,19 @@ def _exposure_per_buffer(
     eventid: int,
     episodeid: Optional[int],
     parse,
+    detail: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, pd.DataFrame]:
-    if episodeid is None:
-        detail = get_event_detail(eventid)
-    else:
+    if episodeid is not None and detail is not None:
+        # The two args describe different snapshots (event-level vs.
+        # a specific episode). Accepting both silently would mean
+        # the caller's `detail` is wasted; force them to pick one.
+        raise ValueError(
+            "pass either `episodeid` or `detail`, not both"
+        )
+    if episodeid is not None:
         detail = get_episode_detail(eventid, episodeid)
+    elif detail is None:
+        detail = get_event_detail(eventid)
     impacts = detail["properties"]["impacts"]
 
     result: Dict[str, pd.DataFrame] = {}

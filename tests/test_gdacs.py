@@ -634,3 +634,89 @@ def test_latest_episode_id_malformed_url_raises():
     }
     with pytest.raises(gdacs.EpisodeUrlFormatError):
         gdacs.latest_episode_id(detail)
+
+
+# ---------------------------------------------------------------------------
+# `detail` reuse — pass a pre-fetched event_detail to skip the internal HTTP
+# ---------------------------------------------------------------------------
+
+
+def _counting_dispatch(detail, payload):
+    """Return (dispatch, calls) where calls is a list of URLs seen.
+    geteventdata-style URLs return the detail; everything else returns
+    payload. The list is the test's way of asserting that an internal
+    detail fetch did or did not happen."""
+    calls = []
+
+    def fake(url, params=None, **kwargs):
+        calls.append(url)
+        if "geteventdata" in url or "getepisodedata" in url:
+            return detail
+        return payload
+
+    return fake, calls
+
+
+def test_get_timeline_uses_provided_detail_and_skips_fetch(monkeypatch):
+    detail = _event_detail(timeline_url="https://gdacs/timeline.json")
+    timeline = _timeline_response([
+        {
+            "advisory_number": "1",
+            "name": "TEST",
+            "advisory_datetime": "2024-09-01T06:00:00Z",
+            "actual": "true",
+            "current": "true",
+            "alertcolor": "Red",
+            "country": "USA",
+            "latitude": "20.0",
+            "longitude": "-80.0",
+            "wind_speed": "55",
+            "pop": "0",
+            "pop39": "0",
+            "pop74": "0",
+            "storm_status": ["Tropical Storm"],
+        },
+    ])
+    fake, calls = _counting_dispatch(detail, timeline)
+    _install_fake_get(monkeypatch, fake)
+
+    gdacs.get_timeline(eventid=1, detail=detail)
+    # Only the timeline URL gets fetched — no geteventdata round-trip.
+    assert not any("geteventdata" in u for u in calls)
+    assert any("timeline" in u for u in calls)
+
+
+def test_get_exposure_adm0_uses_provided_detail_and_skips_fetch(monkeypatch):
+    detail = _event_detail(buffer_urls=_BUFFER_URLS)
+    buf = _buffer_response(_datum_group("country", [_ADM0_ROW]))
+    fake, calls = _counting_dispatch(detail, buf)
+    _install_fake_get(monkeypatch, fake)
+
+    gdacs.get_exposure_adm0(eventid=1, detail=detail)
+    assert not any("geteventdata" in u for u in calls)
+    # Both buffer URLs still get fetched (the actual exposure data).
+    assert sum(1 for u in calls if "buffer" in u) == 2
+
+
+def test_get_exposure_adm1_uses_provided_detail_and_skips_fetch(monkeypatch):
+    detail = _event_detail(buffer_urls=_BUFFER_URLS)
+    buf = _buffer_response(_datum_group("alert", [_ADM1_ROW]))
+    fake, calls = _counting_dispatch(detail, buf)
+    _install_fake_get(monkeypatch, fake)
+
+    gdacs.get_exposure_adm1(eventid=1, detail=detail)
+    assert not any("geteventdata" in u for u in calls)
+    assert sum(1 for u in calls if "buffer" in u) == 2
+
+
+def test_get_exposure_adm0_rejects_episodeid_and_detail_together(monkeypatch):
+    """episodeid and detail describe different snapshots (per-episode
+    vs. event-level), so passing both is almost always a caller bug —
+    we raise rather than silently picking one."""
+    event_detail = _event_detail(buffer_urls=_BUFFER_URLS)
+    buf = _buffer_response(_datum_group("country", [_ADM0_ROW]))
+    fake, _ = _counting_dispatch(event_detail, buf)
+    _install_fake_get(monkeypatch, fake)
+
+    with pytest.raises(ValueError, match="episodeid"):
+        gdacs.get_exposure_adm0(eventid=1, episodeid=42, detail=event_detail)
