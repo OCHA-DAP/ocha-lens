@@ -440,95 +440,171 @@ def _filled_geom(geom):
     return geom
 
 
-def _best_atcf_for_polygon(geom, tracks_at_time: gpd.GeoDataFrame) -> str:
-    """Return the atcf_id whose track points are most contained within geom.
+_WSP_TRACK_OFFSET_HOURS = 3
 
-    Falls back to nearest centroid if no track points land inside the filled
-    polygon (e.g. coarse track resolution relative to a small polygon).
+
+def _atcf_ids_intersecting_polygon(
+    geom,
+    tracks_by_storm: dict,
+) -> list[str]:
+    """Return every atcf_id whose track linestring intersects ``geom``.
+
+    ``tracks_by_storm`` is a pre-built dict of {atcf_id: shapely.Geometry}
+    where each value is either a LineString through the storm's track
+    points (sorted by valid_time) or a Point if the storm has only one
+    track at this issued_time.
+
+    Uses the **hole-filled** polygon so donut-shaped WSP bands correctly
+    treat their interior as inside. No centroid-distance or proximity
+    fallback — if no storm's track touches the polygon, no match.
     """
+    if not tracks_by_storm:
+        return []
     filled = _filled_geom(geom)
-    counts = (
-        tracks_at_time.assign(inside=tracks_at_time.geometry.within(filled))
-        .groupby("atcf_id")["inside"]
-        .sum()
-    )
-    if counts.max() > 0:
-        return counts.idxmax()
-    centroids = tracks_at_time.groupby("atcf_id").geometry.apply(
-        lambda gs: gs.union_all().centroid
-    )
-    return centroids.apply(lambda c: geom.centroid.distance(c)).idxmin()
+    return [
+        aid for aid, line in tracks_by_storm.items() if filled.intersects(line)
+    ]
+
+
+def _build_tracks_by_storm(tracks_at_time: gpd.GeoDataFrame) -> dict:
+    """Per atcf_id, build a LineString through its tracks (or Point if single).
+
+    Multiple track points are sorted by valid_time before being joined.
+    """
+    from shapely.geometry import LineString
+
+    out: dict = {}
+    for atcf_id, sub in tracks_at_time.groupby("atcf_id"):
+        if len(sub) == 1:
+            out[atcf_id] = sub.geometry.iloc[0]
+        else:
+            sub_sorted = (
+                sub.sort_values("valid_time")
+                if "valid_time" in sub.columns
+                else sub
+            )
+            out[atcf_id] = LineString(
+                [(p.x, p.y) for p in sub_sorted.geometry]
+            )
+    return out
 
 
 def match_wsp_to_tracks(
     gdf_wsp: gpd.GeoDataFrame,
     gdf_tracks: gpd.GeoDataFrame,
 ) -> gpd.GeoDataFrame:
-    """Match WSP polygons to NHC track forecasts by issued_time.
+    """Match WSP polygons to NHC track forecasts by strict track-line overlap.
 
-    For issued_times with a single active storm the polygon is assigned
-    directly.  For multiple active storms the MultiPolygon is exploded into
-    individual components and each is matched to the track whose forecast
-    points fall inside it (using hole-filled geometry to handle donut shapes).
+    A polygon part is matched to an atcf_id if and only if that storm's
+    track LineString (the polyline through its track points at the relevant
+    issued_time) intersects the hole-filled polygon. The relevant
+    issued_times are:
+      - the same issued_time as the WSP, AND
+      - issued_time + 3h (WSPs are published ~3h after the nominal NHC
+        advisory cycle, so the matching track advisory may be that next
+        cycle)
+
+    Using a LineString rather than point-containment matters because track
+    points are sparse (12–24h spacing) while WSP probability bands —
+    especially the inner 50–80% bands — can be narrow ribbons along the
+    track. A polygon that lies between two track points won't contain
+    either point, but the line connecting them does intersect the polygon.
+
+    No fallback: polygons that don't intersect any storm's track line at
+    the relevant issued_times are returned with ``atcf_id=None``.
+
+    Multi-storm parts: if a single (issued_time, wind_threshold_kt,
+    percentage) polygon is a MultiPolygon, it is exploded before matching.
+    A storm can appear in multiple rows for the same band when its cone
+    splits into disjoint regions. Callers that need a one-row-per-
+    (issued_time, wind_threshold_kt, percentage, atcf_id) view should
+    ``.dissolve(by=[...])`` the result themselves.
 
     Parameters
     ----------
     gdf_wsp:
-        Rows from storms.nhc_wsp_polygon.
-        Required columns: id, issued_time, wind_threshold_kt, percentage, geometry.
+        Rows from storms.nhc_wsp_polygon_raw.
+        Required columns: id, issued_time, wind_threshold_kt, percentage,
+        geometry.
     gdf_tracks:
         Rows from storms.nhc_tracks_geo.
         Required columns: atcf_id, issued_time, geometry (Point, EPSG:4326).
+        Optional: valid_time (used to order points along the track line).
 
     Returns
     -------
     GeoDataFrame
-        gdf_wsp with an added ``atcf_id`` column.  For multi-storm
-        issued_times the MultiPolygon rows are exploded into individual polygon
-        rows (one per storm).  Rows whose issued_time has no corresponding
-        tracks are returned with ``atcf_id=None``.
+        Exploded polygon parts with an added ``atcf_id`` column.
+        - One row per (storm, polygon part) where the track-line intersects.
+        - If a part is intersected by multiple storms' tracks (overlapping
+          cones), a row is emitted for each matching storm.
+        - Parts with no matching storm have ``atcf_id=None``.
     """
-    gdf_wsp = gdf_wsp[gdf_wsp.geometry.notna()].copy()
+    import warnings as _warnings
 
-    track_counts = gdf_tracks.groupby("issued_time")["atcf_id"].nunique()
-    single_times = track_counts[track_counts == 1].index
-    multi_times = track_counts[track_counts > 1].index
-
-    # --- single-storm: direct merge ---
-    single_atcf = gdf_tracks[
-        gdf_tracks["issued_time"].isin(single_times)
-    ].drop_duplicates("issued_time")[["issued_time", "atcf_id"]]
-    gdf_single = gdf_wsp[gdf_wsp["issued_time"].isin(single_times)].merge(
-        single_atcf, on="issued_time", how="left"
-    )
-
-    # --- multi-storm: explode then spatial match ---
-    gdf_multi = gdf_wsp[gdf_wsp["issued_time"].isin(multi_times)].copy()
-    if not gdf_multi.empty:
-        gdf_multi_exp = gdf_multi.explode(index_parts=False).reset_index(
-            drop=True
+    with _warnings.catch_warnings():
+        _warnings.filterwarnings(
+            "ignore",
+            message=".*GeoSeries.notna.*",
+            category=UserWarning,
         )
-        atcf_ids = []
-        for _, row in gdf_multi_exp.iterrows():
-            tracks_at_time = gdf_tracks[
-                gdf_tracks["issued_time"] == row["issued_time"]
-            ]
-            atcf_ids.append(
-                _best_atcf_for_polygon(row.geometry, tracks_at_time)
-            )
-        gdf_multi_exp["atcf_id"] = atcf_ids
-    else:
-        gdf_multi_exp = gdf_multi.copy()
-        gdf_multi_exp["atcf_id"] = pd.Series(dtype="object")
+        mask = ~gdf_wsp.geometry.is_empty & gdf_wsp.geometry.notna()
+    gdf_wsp = gdf_wsp[mask].copy()
+    if gdf_wsp.empty:
+        gdf_wsp["atcf_id"] = pd.Series(dtype="object")
+        return gdf_wsp
 
-    # --- no-track times: return with atcf_id=None ---
-    tracked_times = set(single_times) | set(multi_times)
-    gdf_no_track = gdf_wsp[~gdf_wsp["issued_time"].isin(tracked_times)].copy()
-    gdf_no_track["atcf_id"] = None
+    # Explode every WSP MultiPolygon up front so each row is a single part.
+    gdf_exp = gdf_wsp.explode(index_parts=False).reset_index(drop=True)
 
-    return gpd.GeoDataFrame(
-        pd.concat(
-            [gdf_single, gdf_multi_exp, gdf_no_track], ignore_index=True
-        ),
-        crs=gdf_wsp.crs,
-    )
+    # Pre-build storm-track lines per issued_time once (avoids rebuilding
+    # for every polygon part).
+    lines_by_it: dict = {}
+    for it, sub in gdf_tracks.groupby("issued_time"):
+        lines_by_it[it] = _build_tracks_by_storm(sub)
+
+    offset = pd.Timedelta(hours=_WSP_TRACK_OFFSET_HOURS)
+
+    rows: list[dict] = []
+    for _, row in gdf_exp.iterrows():
+        it = row["issued_time"]
+        # Merge candidate storms from both (T) and (T+3h) cycles. Same storm
+        # appearing in both cycles gets deduped to one entry; if its line at
+        # either cycle intersects the polygon we count that as a match.
+        candidates: dict = {}
+        if it in lines_by_it:
+            candidates.update(lines_by_it[it])
+        it_plus = it + offset
+        if it_plus in lines_by_it:
+            for aid, ln in lines_by_it[it_plus].items():
+                if aid not in candidates:
+                    candidates[aid] = ln
+
+        if not candidates:
+            r = row.to_dict()
+            r["atcf_id"] = None
+            rows.append(r)
+            continue
+
+        matched = _atcf_ids_intersecting_polygon(row.geometry, candidates)
+        # Second pass: a storm present at it+3h with a different track line
+        # might still intersect via that variant.
+        if it_plus in lines_by_it:
+            for aid, ln in lines_by_it[it_plus].items():
+                if aid not in matched and _filled_geom(
+                    row.geometry
+                ).intersects(ln):
+                    matched.append(aid)
+
+        if not matched:
+            r = row.to_dict()
+            r["atcf_id"] = None
+            rows.append(r)
+        else:
+            for atcf_id in matched:
+                r = row.to_dict()
+                r["atcf_id"] = atcf_id
+                rows.append(r)
+
+    out = gpd.GeoDataFrame(rows, geometry="geometry", crs=gdf_wsp.crs)
+    return out

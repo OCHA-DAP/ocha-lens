@@ -1681,6 +1681,80 @@ WSP_POLYGON_SCHEMA = pa.DataFrameSchema(
 )
 
 
+# Schema for per-storm matched WSP polygons. Mirrors
+# storms.nhc_wsp_polygon_matched in ds-storms-pipeline: one MultiPolygon row
+# per (issued_time, wind_threshold_kt, percentage, atcf_id), built from the
+# raw NHC WSP output by ``match_wsp_to_tracks`` + a per-key dissolve.
+_WSP_KT = pa.Check.isin([34, 50, 64])
+_PCT_BANDS = pa.Check.isin(list(WSP_PERCENTAGE_MAP.values()))
+
+WSP_POLYGON_MATCHED_SCHEMA = pa.DataFrameSchema(
+    {
+        "issued_time": pa.Column(pd.Timestamp, nullable=False),
+        "wind_threshold_kt": pa.Column(int, _WSP_KT, nullable=False),
+        "percentage": pa.Column(int, _PCT_BANDS, nullable=False),
+        "atcf_id": pa.Column(str, nullable=True),
+        "geometry": pa.Column(gpd.array.GeometryDtype, nullable=True),
+    },
+    strict=True,
+    coerce=True,
+    unique=["issued_time", "wind_threshold_kt", "percentage", "atcf_id"],
+    report_duplicates="all",
+)
+
+# Mirrors storms.nhc_wsp_fcastonly_polygon. One MultiPolygon row per
+# (issued_time, wind_threshold_kt, percentage, atcf_id). ``obsv_valid_time``
+# records which observed buffer was used for the cut-out.
+WSP_FCASTONLY_POLYGON_SCHEMA = pa.DataFrameSchema(
+    {
+        "issued_time": pa.Column(pd.Timestamp, nullable=False),
+        "wind_threshold_kt": pa.Column(int, _WSP_KT, nullable=False),
+        "percentage": pa.Column(int, _PCT_BANDS, nullable=False),
+        "atcf_id": pa.Column(str, nullable=True),
+        "obsv_valid_time": pa.Column(pd.Timestamp, nullable=True),
+        "geometry": pa.Column(gpd.array.GeometryDtype, nullable=True),
+    },
+    strict=True,
+    coerce=True,
+    unique=["issued_time", "wind_threshold_kt", "percentage", "atcf_id"],
+    report_duplicates="all",
+)
+
+
+def _wsp_exposure_schema() -> pa.DataFrameSchema:
+    return pa.DataFrameSchema(
+        {
+            "issued_time": pa.Column(pd.Timestamp, nullable=False),
+            "wind_threshold_kt": pa.Column(int, _WSP_KT, nullable=False),
+            "percentage": pa.Column(int, _PCT_BANDS, nullable=False),
+            "atcf_id": pa.Column(str, nullable=True),
+            "admin_level": pa.Column(int, pa.Check.ge(0), nullable=False),
+            "iso3": pa.Column(str, nullable=False),
+            "pcode": pa.Column(str, nullable=False),
+            "pop_exposed": pa.Column(int, pa.Check.ge(0), nullable=False),
+        },
+        strict=True,
+        coerce=True,
+        unique=[
+            "issued_time",
+            "wind_threshold_kt",
+            "percentage",
+            "atcf_id",
+            "admin_level",
+            "pcode",
+        ],
+        report_duplicates="all",
+    )
+
+
+# Mirrors storms.nhc_wsp_exposure (admin-level exposure for the full WSP).
+WSP_EXPOSURE_SCHEMA = _wsp_exposure_schema()
+
+# Mirrors storms.nhc_wsp_fcastonly_exposure (admin-level exposure for the
+# fcastonly WSP — same shape as WSP_EXPOSURE_SCHEMA).
+WSP_FCASTONLY_EXPOSURE_SCHEMA = _wsp_exposure_schema()
+
+
 def get_wsp(
     issued_time: Optional[str] = None,
     start: Optional[str] = None,
@@ -1805,7 +1879,9 @@ def _load_nhc_wsp_archive(
         cache_path.mkdir(parents=True, exist_ok=True)
 
     all_gdfs = []
-    for ts in issuances:
+    from tqdm import tqdm
+
+    for ts in tqdm(issuances, unit="issuance", leave=False):
         ts_str = ts.strftime("%Y%m%d%H")
         cache_file = cache_path / f"{ts_str}_wsp_120hr5km.zip"
 
