@@ -20,6 +20,7 @@ celerybeat-schedule
 # virtualenv
 venv/
 ENV/
+.venv
 
 # Distribution / packaging
 .Python
@@ -59,3 +60,5 @@ __marimo__
 
 docs/diagrams/*
 storm/*
+
+sandbox

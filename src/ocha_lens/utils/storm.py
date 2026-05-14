@@ -1,6 +1,42 @@
+from typing import Tuple
+
 import geopandas as gpd
+import numpy as np
 import pandas as pd
-from shapely.geometry import Point
+from scipy.interpolate import PchipInterpolator
+from shapely import Polygon
+from shapely.geometry import MultiPolygon, Point, box
+
+QUADS = ["ne", "se", "sw", "nw"]
+NM_TO_M = 1.852 * 1000
+BUFFER_SPEEDS = [34, 50, 64]
+
+GEO_CRS_MERIDIAN = "+proj=longlat +datum=WGS84 +lon_wrap=0"
+GEO_CRS_ANTIMERIDIAN = "+proj=longlat +datum=WGS84 +lon_wrap=180"
+GEO_CRS_ANTIMERIDIAN_NEGATIVE = "+proj=longlat +datum=WGS84 +lon_wrap=-180"
+
+BASIN_GEO_CRS = {
+    "EP": GEO_CRS_ANTIMERIDIAN_NEGATIVE,
+    "NA": GEO_CRS_MERIDIAN,
+    "NI": GEO_CRS_MERIDIAN,
+    "SI": GEO_CRS_MERIDIAN,
+    "SA": GEO_CRS_MERIDIAN,
+    "WP": GEO_CRS_ANTIMERIDIAN,
+    "SP": GEO_CRS_ANTIMERIDIAN,
+}
+
+PROJ_CRS_MERIDIAN = "EPSG:3857"
+PROJ_CRS_ANTIMERIDIAN = "EPSG:3832"
+
+BASIN_PROJ_CRS = {
+    "EP": PROJ_CRS_ANTIMERIDIAN,
+    "NA": PROJ_CRS_MERIDIAN,
+    "NI": PROJ_CRS_MERIDIAN,
+    "SI": PROJ_CRS_MERIDIAN,
+    "SA": PROJ_CRS_MERIDIAN,
+    "WP": PROJ_CRS_ANTIMERIDIAN,
+    "SP": PROJ_CRS_ANTIMERIDIAN,
+}
 
 
 def _to_gdf(df):
@@ -86,3 +122,552 @@ def check_unique_when_storm_id_not_null(df):
         subset=["storm_id", "valid_time", "leadtime"]
     )
     return ~duplicates.any()
+
+
+def interpolate_track(
+    gdf: gpd.GeoDataFrame,
+    time_col: str = "valid_time",
+    freq: str = "30min",
+    include_ends: bool = True,
+) -> gpd.GeoDataFrame:
+    if gdf.crs is None or gdf.crs.to_epsg() != 4326:
+        raise ValueError("GeoDataFrame must be EPSG:4326")
+
+    work = gdf.copy()
+
+    work[time_col] = pd.to_datetime(work[time_col], utc=True)
+    work = work.sort_values(time_col).drop_duplicates(subset=[time_col])
+    work = work[~work.geometry.is_empty]
+
+    work["lat"] = work.geometry.y
+    work["lon"] = work.geometry.x
+
+    n = len(work)
+
+    # --- ensure output schema matches input
+    numeric_cols = work.select_dtypes(include=[np.number]).columns.difference(
+        ["lat", "lon"]
+    )
+
+    if n == 0:
+        return gpd.GeoDataFrame(columns=work.columns, crs=4326)
+
+    # --- target time grid
+    tmin, tmax = work[time_col].min(), work[time_col].max()
+
+    start = tmin.floor(freq) if include_ends else tmin.ceil(freq)
+    end = tmax.ceil(freq) if include_ends else tmax.floor(freq)
+
+    target = pd.date_range(start, end, freq=freq, tz="UTC")
+    target = target[(target >= tmin) & (target <= tmax)]
+
+    if target.empty:
+        target = pd.DatetimeIndex([tmin, tmax])
+
+    t0 = work[time_col].iloc[0]
+
+    x = (work[time_col] - t0).dt.total_seconds().to_numpy()
+    x_new = (pd.Series(target) - t0).dt.total_seconds().to_numpy()
+
+    out = pd.DataFrame(index=target)
+
+    # --- lat/lon handling
+    lat = work["lat"].to_numpy(float)
+    lon = antimeridian_safe_lon(work["lon"].to_numpy(float))
+
+    if n == 1:
+        lat_new = np.repeat(lat[0], len(x_new))
+        lon_new = np.repeat(lon[0], len(x_new))
+
+    elif n == 2:
+        lat_new = np.interp(x_new, x, lat)
+        lon_new = np.interp(x_new, x, lon)
+
+    else:
+        lat_new = PchipInterpolator(x, lat)(x_new)
+        lon_new = PchipInterpolator(x, lon)(x_new)
+
+    lon_new = ((lon_new + 180) % 360) - 180
+
+    out["lat"] = lat_new
+    out["lon"] = lon_new
+
+    # --- other numeric columns
+    for col in numeric_cols:
+        y = work[col].to_numpy(float)
+
+        if n == 1:
+            out[col] = np.repeat(y[0], len(x_new))
+        else:
+            out[col] = np.interp(x_new, x, y)
+
+    out.index.name = time_col
+    out = out.reset_index()
+
+    geometry = gpd.points_from_xy(out["lon"], out["lat"])
+
+    out = gpd.GeoDataFrame(
+        out.drop(columns=["lat", "lon"]),
+        geometry=geometry,
+        crs=4326,
+    )
+
+    return out
+
+
+def antimeridian_safe_lon(lon):
+    """
+    Convert longitude array to a continuous sequence suitable for plotting.
+
+    Handles antimeridian crossings by:
+    1. unwrapping longitude
+    2. shifting to the optimal 360° window around the track center
+
+    Parameters
+    ----------
+    lon : array-like
+        Longitudes in degrees (any range).
+
+    Returns
+    -------
+    numpy.ndarray
+        Continuous longitudes suitable for plotting.
+    """
+
+    lon = np.asarray(lon)
+
+    lon_unwrap = np.rad2deg(np.unwrap(np.deg2rad(lon)))
+
+    center = lon_unwrap.mean()
+
+    lon_shift = lon_unwrap - 360 * np.round((lon_unwrap - center) / 360)
+
+    return lon_shift
+
+
+def expand_quad_col(df, col, quads=None):
+    if quads is None:
+        quads = QUADS
+
+    # check if all new columns are already present
+    new_cols = [f"{col}_{q}" for q in quads]
+    if all(c in df.columns for c in new_cols):
+        print("All expanded columns already exist. Skipping expansion.")
+        return df
+
+    def parse_quad(x):
+        if pd.isna(x):
+            return [np.nan] * len(quads)
+
+        x = x.strip(
+            "{}[]"
+        )  # handle both PostgreSQL {..} and JSON [..] formats
+        vals = x.split(",")
+
+        return [
+            np.nan
+            if v.strip() in ("NaN", "", "nan", "null", "None")
+            else float(v)
+            for v in vals
+        ]
+
+    df_expanded = df[col].apply(parse_quad).apply(pd.Series)
+
+    df_expanded.columns = [f"{col}_{q}" for q in quads]
+
+    return df.join(df_expanded)
+
+
+def _radius_from_quadrants(
+    theta_deg: np.ndarray, ne: float, se: float, sw: float, nw: float
+) -> np.ndarray:
+    """
+    Return radius for each angle by linearly interpolating between the
+    four quadrant control points defined at bearings:
+        45°  -> NE
+        135° -> NW
+        225° -> SW
+        315° -> SE
+    Bearing convention: 0° = East, 90° = North (mathematical).
+    """
+    # Control bearings (deg) and radii, with wrap-around point to close the loop
+    bearings = np.array([45, 135, 225, 315, 405], dtype=float)
+    radii = np.array([ne, nw, sw, se, ne], dtype=float)
+
+    # Map all thetas into [0, 360) and also allow values up to 405 for interpolation
+    t = (theta_deg % 360).astype(float)
+    # For values in [0,45), make an equivalent in [360,405) to interpolate to NE nicely
+    t_wrap = t.copy()
+    t_wrap[t < 45] += 360
+
+    # Interpolate and then map back (the interpolation function is periodic due to control duplication)
+    r = np.interp(t_wrap, bearings, radii)
+    return r
+
+
+def make_quadrant_disk(
+    center_xy: Tuple[float, float],
+    ne: float,
+    se: float,
+    sw: float,
+    nw: float,
+    n_points: int = 360,
+) -> Polygon:
+    """
+    Build a smooth polygon around (x, y) using quadrant radii. Units assumed meters.
+    - center_xy: (x, y) in EPSG:3832
+    - ne, se, sw, nw: radii for quadrants (meters)
+    - n_points: angular resolution
+    Bearing convention: 0°=East, 90°=North; polygon traced counter-clockwise.
+    """
+    x0, y0 = center_xy
+    theta = np.linspace(0, 360, n_points, endpoint=False)  # degrees
+    r = _radius_from_quadrants(theta, ne, se, sw, nw)
+
+    # Convert polar -> Cartesian
+    th = np.deg2rad(theta)
+    xs = x0 + r * np.cos(th)
+    ys = y0 + r * np.sin(th)
+
+    # Ensure valid ring: close the polygon
+    coords = np.column_stack([xs, ys])
+    return Polygon(coords)
+
+
+def build_merged_wind_buffer(
+    gdf: gpd.GeoDataFrame,
+    quad_cols: Tuple[str, str, str, str],
+):
+    """
+    Build a merged wind buffer polygon from quadrant radii columns.
+    Parameters
+    ----------
+    gdf: gpd.GeoDataFrame
+        GeoDataFrame with point geometries and quadrant radius columns
+    quad_cols: Tuple[str, str, str, str]
+        Names of the four quadrant radius columns in order:
+        (ne_col, se_col, sw_col, nw_col)
+
+    Returns
+    -------
+    gpd.GeoSeries or None
+        Merged polygon of wind buffers, or None if all radius values are NaN
+
+    """
+    ne_col, se_col, sw_col, nw_col = quad_cols
+    polys = []
+    gdf[[ne_col, se_col, sw_col, nw_col]] = (
+        gdf[[ne_col, se_col, sw_col, nw_col]].fillna(0) * NM_TO_M
+    )
+    for _, row in gdf.iterrows():
+        if row[[ne_col, se_col, sw_col, nw_col]].isna().all():
+            return None
+
+        poly = make_quadrant_disk(
+            (row.geometry.x, row.geometry.y),
+            row[ne_col],
+            row[se_col],
+            row[sw_col],
+            row[nw_col],
+        )
+        polys.append(poly)
+    return gpd.GeoSeries(polys).union_all()
+
+
+def calculate_wind_buffers_gdf(
+    gdf: gpd.GeoDataFrame,
+    quad_cols_format: str = "usa_quadrant_radius_{speed}_{quad}",
+    valid_time_col: str = "valid_time",
+):
+    """
+    Calculate wind buffer polygons for given wind speed quadrants.
+    Note that this function interpolates the storm track to a regular
+    30-minute interval before calculating the wind buffers.
+    Parameters
+    ----------
+    df: pd.DataFrame
+        DataFrame with storm track data including quadrant radius columns
+    quad_cols_format: str = 'quadrant_radius_{speed}_{quad}'
+        Format string for quadrant radius columns, with placeholders for
+        speed and quad (e.g., 'quadrant_radius_{speed}_{quad}')
+    lon_col: str = 'Longitude'
+        Name of the longitude column in df
+    lat_col: str = 'Latitude'
+        Name of the latitude column in df
+    valid_time_col: str = 'valid_time'
+        Name of the valid time column in df
+
+    Returns
+    -------
+    gpd.GeoDataFrame
+        GeoDataFrame with wind buffer polygons for each speed
+
+    """
+    basin = gdf["basin"].iloc[0] if "basin" in gdf.columns else None
+    geo_crs = BASIN_GEO_CRS.get(basin, GEO_CRS_MERIDIAN)
+    proj_crs = BASIN_PROJ_CRS.get(basin, PROJ_CRS_MERIDIAN)
+
+    gdf_interp = interpolate_track(
+        gdf,
+        time_col=valid_time_col,
+    )
+    # Reproject via basin-appropriate lon_wrap CRS so antimeridian-crossing
+    # tracks have continuous longitudes before projecting to Mercator.
+    gdf_interp = gdf_interp.to_crs(geo_crs)
+    gdf_interp = gdf_interp.to_crs(proj_crs)
+    dicts = []
+    geoms = []
+    for speed in BUFFER_SPEEDS:
+        speed_quad_cols = tuple(
+            quad_cols_format.format(speed=speed, quad=x) for x in QUADS
+        )
+        geoms.append(build_merged_wind_buffer(gdf_interp, speed_quad_cols))
+        dicts.append({"speed": speed})
+    result = gpd.GeoDataFrame(dicts, geometry=geoms, crs=proj_crs).to_crs(
+        "EPSG:4326"
+    )
+    world = box(-180, -90, 180, 90)
+    result.geometry = result.geometry.intersection(world)
+    return result
+
+
+def _filled_geom(geom):
+    """Return geometry with interior rings removed (fills donut holes)."""
+    if geom.geom_type == "Polygon":
+        return Polygon(geom.exterior.coords)
+    elif geom.geom_type == "MultiPolygon":
+        return MultiPolygon([Polygon(p.exterior.coords) for p in geom.geoms])
+    return geom
+
+
+_WSP_TRACK_OFFSET_HOURS = 3
+
+
+def _atcf_ids_intersecting_polygon(
+    geom,
+    tracks_by_storm: dict,
+) -> list[str]:
+    """Return every atcf_id whose track linestring intersects ``geom``.
+
+    ``tracks_by_storm`` is a pre-built dict of {atcf_id: shapely.Geometry}
+    where each value is either a LineString through the storm's track
+    points (sorted by valid_time) or a Point if the storm has only one
+    track at this issued_time.
+
+    Uses the **hole-filled** polygon so donut-shaped WSP bands correctly
+    treat their interior as inside. No centroid-distance or proximity
+    fallback — if no storm's track touches the polygon, no match.
+    """
+    if not tracks_by_storm:
+        return []
+    filled = _filled_geom(geom)
+    return [
+        aid for aid, line in tracks_by_storm.items() if filled.intersects(line)
+    ]
+
+
+def _build_tracks_by_storm(tracks_at_time: gpd.GeoDataFrame) -> dict:
+    """Per atcf_id, build a LineString through its tracks (or Point if single).
+
+    Multiple track points are sorted by valid_time before being joined.
+    """
+    from shapely.geometry import LineString
+
+    out: dict = {}
+    for atcf_id, sub in tracks_at_time.groupby("atcf_id"):
+        if len(sub) == 1:
+            out[atcf_id] = sub.geometry.iloc[0]
+        else:
+            sub_sorted = (
+                sub.sort_values("valid_time")
+                if "valid_time" in sub.columns
+                else sub
+            )
+            out[atcf_id] = LineString(
+                [(p.x, p.y) for p in sub_sorted.geometry]
+            )
+    return out
+
+
+def match_wsp_to_tracks(
+    gdf_wsp: gpd.GeoDataFrame,
+    gdf_tracks: gpd.GeoDataFrame,
+    *,
+    extra_containers: gpd.GeoDataFrame | None = None,
+) -> gpd.GeoDataFrame:
+    """Match WSP polygons to NHC track forecasts.
+
+    Two passes per polygon part, in order:
+
+    1. **Line-intersection.** A part is matched to an atcf_id if that
+       storm's track LineString (the polyline through its track points at
+       the WSP's issued_time, or +3h) intersects the hole-filled polygon.
+       WSPs are published ~3h after the nominal NHC advisory cycle, so the
+       matching track advisory may be that next cycle.
+
+    2. **Containment fallback.** If a part is still unmatched, check
+       whether it sits fully inside any already-matched polygon at the
+       same (issued_time, wind_threshold_kt). The filled (donut-hole-
+       ignoring) exterior of each candidate container is tested against
+       the filled part. The smallest qualifying container wins.
+
+    Parts are processed in **ascending percentage order** within each
+    (issued_time, wind_threshold_kt) group so that the big outer bands
+    (which are likeliest to match via line-intersection) get assigned
+    first and can serve as containers for the small inner bands that
+    follow.
+
+    Line-intersection matters because track points are sparse (12–24h
+    spacing) while WSP probability bands — especially the inner 50–80%
+    bands — can be narrow ribbons along the track. Containment fallback
+    matters because NHC WSP bands are nested annuli: a 90% lobe typically
+    sits in the donut hole of the 70% band of the same storm, so even
+    when no track point is near the lobe its parent band already is.
+
+    Multi-storm parts: if a single (issued_time, wind_threshold_kt,
+    percentage) polygon is a MultiPolygon, it is exploded before matching.
+    A storm can appear in multiple rows for the same band when its cone
+    splits into disjoint regions. Callers that need a one-row-per-
+    (issued_time, wind_threshold_kt, percentage, atcf_id) view should
+    ``.dissolve(by=[...])`` the result themselves.
+
+    Parameters
+    ----------
+    gdf_wsp:
+        Rows from storms.nhc_wsp_polygon_raw.
+        Required columns: issued_time, wind_threshold_kt, percentage,
+        geometry.
+    gdf_tracks:
+        Rows from storms.nhc_tracks_geo.
+        Required columns: atcf_id, issued_time, geometry (Point, EPSG:4326).
+        Optional: valid_time (used to order points along the track line).
+    extra_containers:
+        Optional GeoDataFrame of already-matched polygons supplied by the
+        caller (e.g. from a prior matching pass). Used **only** as
+        containment-fallback donors — never re-matched. Required columns:
+        issued_time, wind_threshold_kt, atcf_id, geometry. Any rows with
+        atcf_id IS NULL are ignored.
+
+    Returns
+    -------
+    GeoDataFrame
+        Exploded polygon parts with an added ``atcf_id`` column.
+        - One row per (storm, polygon part) where the track-line intersects
+          or containment fallback fires.
+        - If a part is intersected by multiple storms' tracks (overlapping
+          cones), a row is emitted for each matching storm.
+        - Parts with no match still have ``atcf_id=None``.
+    """
+    import warnings as _warnings
+
+    with _warnings.catch_warnings():
+        _warnings.filterwarnings(
+            "ignore",
+            message=".*GeoSeries.notna.*",
+            category=UserWarning,
+        )
+        mask = ~gdf_wsp.geometry.is_empty & gdf_wsp.geometry.notna()
+    gdf_wsp = gdf_wsp[mask].copy()
+    if gdf_wsp.empty:
+        gdf_wsp["atcf_id"] = pd.Series(dtype="object")
+        return gdf_wsp
+
+    # Explode every WSP MultiPolygon up front so each row is a single part,
+    # then sort by percentage ascending so big outer bands are matched
+    # first and are available as containment-fallback donors for the small
+    # inner bands that come after.
+    gdf_exp = gdf_wsp.explode(index_parts=False).reset_index(drop=True)
+    if "percentage" in gdf_exp.columns:
+        gdf_exp = gdf_exp.sort_values(
+            ["issued_time", "wind_threshold_kt", "percentage"]
+        ).reset_index(drop=True)
+
+    # Pre-build storm-track lines per issued_time once (avoids rebuilding
+    # for every polygon part).
+    lines_by_it: dict = {}
+    for it, sub in gdf_tracks.groupby("issued_time"):
+        lines_by_it[it] = _build_tracks_by_storm(sub)
+
+    offset = pd.Timedelta(hours=_WSP_TRACK_OFFSET_HOURS)
+
+    # Per (issued_time, wind_threshold_kt), accumulate matched parts as we
+    # iterate so later parts can fall back to containment. Each entry is
+    # (filled_geom, atcf_id, area). Seeded from extra_containers.
+    matched_by_key: dict[tuple, list[tuple]] = {}
+    if extra_containers is not None and not extra_containers.empty:
+        for _, c in extra_containers.iterrows():
+            if c.get("atcf_id") is None:
+                continue
+            g = c.geometry
+            if g is None or g.is_empty:
+                continue
+            key = (c["issued_time"], c["wind_threshold_kt"])
+            matched_by_key.setdefault(key, []).append(
+                (_filled_geom(g), c["atcf_id"], g.area)
+            )
+
+    def _containment_match(part_geom, key):
+        """Return atcf_id of the smallest existing container that fully
+        contains ``part_geom`` (donut holes ignored), or None."""
+        candidates_for_key = matched_by_key.get(key, [])
+        if not candidates_for_key:
+            return None
+        filled_part = _filled_geom(part_geom)
+        best_aid = None
+        best_area = None
+        for container_filled, aid, area in candidates_for_key:
+            if container_filled.contains(filled_part):
+                if best_area is None or area < best_area:
+                    best_aid = aid
+                    best_area = area
+        return best_aid
+
+    rows: list[dict] = []
+    for _, row in gdf_exp.iterrows():
+        it = row["issued_time"]
+        kt = row["wind_threshold_kt"]
+        # --- Pass 1: line-intersection at T and T+3h ---
+        candidates: dict = {}
+        if it in lines_by_it:
+            candidates.update(lines_by_it[it])
+        it_plus = it + offset
+        if it_plus in lines_by_it:
+            for aid, ln in lines_by_it[it_plus].items():
+                if aid not in candidates:
+                    candidates[aid] = ln
+
+        matched: list = []
+        if candidates:
+            matched = _atcf_ids_intersecting_polygon(row.geometry, candidates)
+            # Same storm at both T and T+3h: try the it+3h variant too.
+            if it_plus in lines_by_it:
+                filled = _filled_geom(row.geometry)
+                for aid, ln in lines_by_it[it_plus].items():
+                    if aid not in matched and filled.intersects(ln):
+                        matched.append(aid)
+
+        # --- Pass 2: containment fallback for still-unmatched parts ---
+        if not matched:
+            aid = _containment_match(row.geometry, (it, kt))
+            if aid is not None:
+                matched = [aid]
+
+        if not matched:
+            r = row.to_dict()
+            r["atcf_id"] = None
+            rows.append(r)
+        else:
+            filled = _filled_geom(row.geometry)
+            area = row.geometry.area
+            for atcf_id in matched:
+                r = row.to_dict()
+                r["atcf_id"] = atcf_id
+                rows.append(r)
+                # Make this newly-matched part available as a container
+                # for later higher-band parts at the same (it, kt).
+                matched_by_key.setdefault((it, kt), []).append(
+                    (filled, atcf_id, area)
+                )
+
+    out = gpd.GeoDataFrame(rows, geometry="geometry", crs=gdf_wsp.crs)
+    return out
