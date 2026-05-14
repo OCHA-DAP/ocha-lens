@@ -1681,6 +1681,110 @@ WSP_POLYGON_SCHEMA = pa.DataFrameSchema(
 )
 
 
+# ---------------------------------------------------------------------------
+# Downstream NHC buffer & exposure table schemas
+#
+# These mirror tables defined in ds-storms-pipeline (src/schemas/sql/) for the
+# per-storm wind buffer + admin-level exposure products. They aren't returned
+# by any lens loader today — they're shared schemas for downstream pipelines
+# and consumers to validate the data shape they read or write.
+# ---------------------------------------------------------------------------
+
+_WIND_SPEED_KT = pa.Check.isin([34, 50, 64])
+
+
+def _buffer_schema(key_cols: list[str], time_col: str) -> pa.DataFrameSchema:
+    """Helper: a per-storm wind buffer table (one polygon row per key)."""
+    return pa.DataFrameSchema(
+        {
+            "atcf_id": pa.Column(str, nullable=False),
+            time_col: pa.Column(pd.Timestamp, nullable=False),
+            "wind_speed_kt": pa.Column(int, _WIND_SPEED_KT, nullable=False),
+            "geometry": pa.Column(gpd.array.GeometryDtype, nullable=True),
+        },
+        strict=True,
+        coerce=True,
+        unique=key_cols,
+        report_duplicates="all",
+    )
+
+
+def _track_exposure_schema(
+    key_cols: list[str], time_col: str
+) -> pa.DataFrameSchema:
+    """Helper: a per-storm-track admin-level exposure table."""
+    return pa.DataFrameSchema(
+        {
+            "atcf_id": pa.Column(str, nullable=False),
+            time_col: pa.Column(pd.Timestamp, nullable=False),
+            "wind_speed_kt": pa.Column(int, _WIND_SPEED_KT, nullable=False),
+            "admin_level": pa.Column(int, pa.Check.ge(0), nullable=False),
+            "iso3": pa.Column(str, nullable=False),
+            "pcode": pa.Column(str, nullable=False),
+            "pop_exposed": pa.Column(int, pa.Check.ge(0), nullable=False),
+        },
+        strict=True,
+        coerce=True,
+        unique=key_cols,
+        report_duplicates="all",
+    )
+
+
+# Mirrors storms.nhc_tracks_fcast_buffers
+TRACKS_FCAST_BUFFERS_SCHEMA = _buffer_schema(
+    key_cols=["atcf_id", "issued_time", "wind_speed_kt"],
+    time_col="issued_time",
+)
+
+# Mirrors storms.nhc_tracks_obsv_buffers
+TRACKS_OBSV_BUFFERS_SCHEMA = _buffer_schema(
+    key_cols=["atcf_id", "valid_time", "wind_speed_kt"],
+    time_col="valid_time",
+)
+
+# Mirrors storms.nhc_tracks_fcastonly_buffers
+TRACKS_FCASTONLY_BUFFERS_SCHEMA = _buffer_schema(
+    key_cols=["atcf_id", "issued_time", "wind_speed_kt"],
+    time_col="issued_time",
+)
+
+# Mirrors storms.nhc_tracks_fcast_exposure
+TRACKS_FCAST_EXPOSURE_SCHEMA = _track_exposure_schema(
+    key_cols=[
+        "atcf_id",
+        "issued_time",
+        "wind_speed_kt",
+        "admin_level",
+        "pcode",
+    ],
+    time_col="issued_time",
+)
+
+# Mirrors storms.nhc_tracks_obsv_exposure
+TRACKS_OBSV_EXPOSURE_SCHEMA = _track_exposure_schema(
+    key_cols=[
+        "atcf_id",
+        "valid_time",
+        "wind_speed_kt",
+        "admin_level",
+        "pcode",
+    ],
+    time_col="valid_time",
+)
+
+# Mirrors storms.nhc_tracks_fcastonly_exposure
+TRACKS_FCASTONLY_EXPOSURE_SCHEMA = _track_exposure_schema(
+    key_cols=[
+        "atcf_id",
+        "issued_time",
+        "wind_speed_kt",
+        "admin_level",
+        "pcode",
+    ],
+    time_col="issued_time",
+)
+
+
 def get_wsp(
     issued_time: Optional[str] = None,
     start: Optional[str] = None,

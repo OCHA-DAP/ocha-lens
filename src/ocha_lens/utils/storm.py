@@ -259,7 +259,9 @@ def expand_quad_col(df, col, quads=None):
         if pd.isna(x):
             return [np.nan] * len(quads)
 
-        x = x.strip("{}")
+        x = x.strip(
+            "{}[]"
+        )  # handle both PostgreSQL {..} and JSON [..] formats
         vals = x.split(",")
 
         return [np.nan if v in ("NaN", "", "nan") else float(v) for v in vals]
@@ -400,8 +402,6 @@ def calculate_wind_buffers_gdf(
         gdf,
         time_col=valid_time_col,
     )
-    if "usa_quadrant_radius_34_ne" not in gdf_interp.columns:
-        print(gdf_interp)
     proj_crs = "EPSG:3857"
     gdf_interp = gdf_interp.to_crs(proj_crs)
     dicts = []
