@@ -37,7 +37,8 @@ dependencies = [
     "lxml>=6.0.1",
     "beautifulsoup4>=4.12.0",
     "requests>=2.31.0",
-    "lat-lon-parser>=1.2.0"
+    "lat-lon-parser>=1.2.0",
+    "scipy>=1.12.0"
 ]
 dynamic = ["version"]
 
