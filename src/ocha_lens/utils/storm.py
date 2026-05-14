@@ -492,26 +492,37 @@ def _build_tracks_by_storm(tracks_at_time: gpd.GeoDataFrame) -> dict:
 def match_wsp_to_tracks(
     gdf_wsp: gpd.GeoDataFrame,
     gdf_tracks: gpd.GeoDataFrame,
+    *,
+    extra_containers: gpd.GeoDataFrame | None = None,
 ) -> gpd.GeoDataFrame:
-    """Match WSP polygons to NHC track forecasts by strict track-line overlap.
+    """Match WSP polygons to NHC track forecasts.
 
-    A polygon part is matched to an atcf_id if and only if that storm's
-    track LineString (the polyline through its track points at the relevant
-    issued_time) intersects the hole-filled polygon. The relevant
-    issued_times are:
-      - the same issued_time as the WSP, AND
-      - issued_time + 3h (WSPs are published ~3h after the nominal NHC
-        advisory cycle, so the matching track advisory may be that next
-        cycle)
+    Two passes per polygon part, in order:
 
-    Using a LineString rather than point-containment matters because track
-    points are sparse (12–24h spacing) while WSP probability bands —
-    especially the inner 50–80% bands — can be narrow ribbons along the
-    track. A polygon that lies between two track points won't contain
-    either point, but the line connecting them does intersect the polygon.
+    1. **Line-intersection.** A part is matched to an atcf_id if that
+       storm's track LineString (the polyline through its track points at
+       the WSP's issued_time, or +3h) intersects the hole-filled polygon.
+       WSPs are published ~3h after the nominal NHC advisory cycle, so the
+       matching track advisory may be that next cycle.
 
-    No fallback: polygons that don't intersect any storm's track line at
-    the relevant issued_times are returned with ``atcf_id=None``.
+    2. **Containment fallback.** If a part is still unmatched, check
+       whether it sits fully inside any already-matched polygon at the
+       same (issued_time, wind_threshold_kt). The filled (donut-hole-
+       ignoring) exterior of each candidate container is tested against
+       the filled part. The smallest qualifying container wins.
+
+    Parts are processed in **ascending percentage order** within each
+    (issued_time, wind_threshold_kt) group so that the big outer bands
+    (which are likeliest to match via line-intersection) get assigned
+    first and can serve as containers for the small inner bands that
+    follow.
+
+    Line-intersection matters because track points are sparse (12–24h
+    spacing) while WSP probability bands — especially the inner 50–80%
+    bands — can be narrow ribbons along the track. Containment fallback
+    matters because NHC WSP bands are nested annuli: a 90% lobe typically
+    sits in the donut hole of the 70% band of the same storm, so even
+    when no track point is near the lobe its parent band already is.
 
     Multi-storm parts: if a single (issued_time, wind_threshold_kt,
     percentage) polygon is a MultiPolygon, it is exploded before matching.
@@ -524,21 +535,28 @@ def match_wsp_to_tracks(
     ----------
     gdf_wsp:
         Rows from storms.nhc_wsp_polygon_raw.
-        Required columns: id, issued_time, wind_threshold_kt, percentage,
+        Required columns: issued_time, wind_threshold_kt, percentage,
         geometry.
     gdf_tracks:
         Rows from storms.nhc_tracks_geo.
         Required columns: atcf_id, issued_time, geometry (Point, EPSG:4326).
         Optional: valid_time (used to order points along the track line).
+    extra_containers:
+        Optional GeoDataFrame of already-matched polygons supplied by the
+        caller (e.g. from a prior matching pass). Used **only** as
+        containment-fallback donors — never re-matched. Required columns:
+        issued_time, wind_threshold_kt, atcf_id, geometry. Any rows with
+        atcf_id IS NULL are ignored.
 
     Returns
     -------
     GeoDataFrame
         Exploded polygon parts with an added ``atcf_id`` column.
-        - One row per (storm, polygon part) where the track-line intersects.
+        - One row per (storm, polygon part) where the track-line intersects
+          or containment fallback fires.
         - If a part is intersected by multiple storms' tracks (overlapping
           cones), a row is emitted for each matching storm.
-        - Parts with no matching storm have ``atcf_id=None``.
+        - Parts with no match still have ``atcf_id=None``.
     """
     import warnings as _warnings
 
@@ -554,8 +572,15 @@ def match_wsp_to_tracks(
         gdf_wsp["atcf_id"] = pd.Series(dtype="object")
         return gdf_wsp
 
-    # Explode every WSP MultiPolygon up front so each row is a single part.
+    # Explode every WSP MultiPolygon up front so each row is a single part,
+    # then sort by percentage ascending so big outer bands are matched
+    # first and are available as containment-fallback donors for the small
+    # inner bands that come after.
     gdf_exp = gdf_wsp.explode(index_parts=False).reset_index(drop=True)
+    if "percentage" in gdf_exp.columns:
+        gdf_exp = gdf_exp.sort_values(
+            ["issued_time", "wind_threshold_kt", "percentage"]
+        ).reset_index(drop=True)
 
     # Pre-build storm-track lines per issued_time once (avoids rebuilding
     # for every polygon part).
@@ -565,12 +590,43 @@ def match_wsp_to_tracks(
 
     offset = pd.Timedelta(hours=_WSP_TRACK_OFFSET_HOURS)
 
+    # Per (issued_time, wind_threshold_kt), accumulate matched parts as we
+    # iterate so later parts can fall back to containment. Each entry is
+    # (filled_geom, atcf_id, area). Seeded from extra_containers.
+    matched_by_key: dict[tuple, list[tuple]] = {}
+    if extra_containers is not None and not extra_containers.empty:
+        for _, c in extra_containers.iterrows():
+            if c.get("atcf_id") is None:
+                continue
+            g = c.geometry
+            if g is None or g.is_empty:
+                continue
+            key = (c["issued_time"], c["wind_threshold_kt"])
+            matched_by_key.setdefault(key, []).append(
+                (_filled_geom(g), c["atcf_id"], g.area)
+            )
+
+    def _containment_match(part_geom, key):
+        """Return atcf_id of the smallest existing container that fully
+        contains ``part_geom`` (donut holes ignored), or None."""
+        candidates_for_key = matched_by_key.get(key, [])
+        if not candidates_for_key:
+            return None
+        filled_part = _filled_geom(part_geom)
+        best_aid = None
+        best_area = None
+        for container_filled, aid, area in candidates_for_key:
+            if container_filled.contains(filled_part):
+                if best_area is None or area < best_area:
+                    best_aid = aid
+                    best_area = area
+        return best_aid
+
     rows: list[dict] = []
     for _, row in gdf_exp.iterrows():
         it = row["issued_time"]
-        # Merge candidate storms from both (T) and (T+3h) cycles. Same storm
-        # appearing in both cycles gets deduped to one entry; if its line at
-        # either cycle intersects the polygon we count that as a match.
+        kt = row["wind_threshold_kt"]
+        # --- Pass 1: line-intersection at T and T+3h ---
         candidates: dict = {}
         if it in lines_by_it:
             candidates.update(lines_by_it[it])
@@ -580,31 +636,38 @@ def match_wsp_to_tracks(
                 if aid not in candidates:
                     candidates[aid] = ln
 
-        if not candidates:
-            r = row.to_dict()
-            r["atcf_id"] = None
-            rows.append(r)
-            continue
+        matched: list = []
+        if candidates:
+            matched = _atcf_ids_intersecting_polygon(row.geometry, candidates)
+            # Same storm at both T and T+3h: try the it+3h variant too.
+            if it_plus in lines_by_it:
+                filled = _filled_geom(row.geometry)
+                for aid, ln in lines_by_it[it_plus].items():
+                    if aid not in matched and filled.intersects(ln):
+                        matched.append(aid)
 
-        matched = _atcf_ids_intersecting_polygon(row.geometry, candidates)
-        # Second pass: a storm present at it+3h with a different track line
-        # might still intersect via that variant.
-        if it_plus in lines_by_it:
-            for aid, ln in lines_by_it[it_plus].items():
-                if aid not in matched and _filled_geom(
-                    row.geometry
-                ).intersects(ln):
-                    matched.append(aid)
+        # --- Pass 2: containment fallback for still-unmatched parts ---
+        if not matched:
+            aid = _containment_match(row.geometry, (it, kt))
+            if aid is not None:
+                matched = [aid]
 
         if not matched:
             r = row.to_dict()
             r["atcf_id"] = None
             rows.append(r)
         else:
+            filled = _filled_geom(row.geometry)
+            area = row.geometry.area
             for atcf_id in matched:
                 r = row.to_dict()
                 r["atcf_id"] = atcf_id
                 rows.append(r)
+                # Make this newly-matched part available as a container
+                # for later higher-band parts at the same (it, kt).
+                matched_by_key.setdefault((it, kt), []).append(
+                    (filled, atcf_id, area)
+                )
 
     out = gpd.GeoDataFrame(rows, geometry="geometry", crs=gdf_wsp.crs)
     return out
