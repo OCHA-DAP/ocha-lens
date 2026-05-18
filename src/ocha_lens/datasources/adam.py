@@ -3,54 +3,23 @@ exposure datasource.
 
 ADAM publishes per-event/per-episode population exposure CSVs alongside an
 OGC API listing endpoint. Each CSV is at ADM2 granularity; this module
-aggregates up to ADM0 and ADM1 in code (per Hannah's harmonisation precedent)
-and returns one long-form DataFrame with rows for all three admin levels.
+aggregates to ADM0 and ADM1 in code (mirroring Hannah's harmonisation
+precedent) and returns one long-form DataFrame covering all three levels.
 
-ADAM event_id is the same identifier GDACS uses for the same physical event —
-no separate cross-source matching needed; the join key is the event_id itself.
+ADAM event_id is the same identifier GDACS uses for the same physical
+event, so the join key downstream is just the event_id — no separate
+cross-source matching pass needed.
 
-Public API:
-
-  - get_events(from_date, to_date, source="NOAA") -> pd.DataFrame
-      Paginated /items endpoint with server-side source filter; deduped to
-      latest episode per event_id.
-
-  - get_exposure(event_id, population_csv_url) -> pd.DataFrame
-      Downloads the per-episode CSV at the given URL, aggregates ADM2 →
-      ADM0/ADM1, converts ADAM's per-band counts to cumulative ≥-threshold,
-      maps ADM0_NAME → ISO3.
-
-  - name_to_iso3(name) -> Optional[str]
-      pycountry fuzzy lookup with explicit overrides for territories where
-      pycountry fails or is ambiguous (Puerto Rico, USVI, etc.).
-
-  - make_cumulative(df) -> pd.DataFrame
-      Per-band → cumulative ≥ threshold. ADAM stores POP_60_KMH as "people in
-      the 60-90 km/h band only". GDACS is cumulative. This converter is
-      required for cross-source comparability — without it, ADAM pop_34kt
-      would be ~50% smaller than GDACS pop_34kt for the same storm.
-
-Exceptions:
-  - NoExposureCSVError — event's latest episode has no population_csv_url
-    (legitimately rare; some ADAM events lack the static-file output).
-
-Wind threshold mapping:
-  POP_60_KMH  → 34 kt   (strictly ~32 kt, conventionally tropical-storm threshold)
-  POP_90_KMH  → 50 kt   (strictly ~49 kt, gale-force)
-  POP_120_KMH → 64 kt   (strictly ~65 kt, hurricane-force)
-
-Admin layer:
-  ADAM's CSVs are name-only (no codes). The underlying boundary set appears
-  to be FAO GAUL 2015 Level 2 based on the ADM0/1/2_NAME schema fingerprint
-  and WFP's institutional standard. No public crosswalk to OCHA COD pcodes
-  exists; downstream pcode enrichment is deferred to a future geometric-join
-  pipeline that uses ADAM's per-event wind-footprint shapefiles.
+The CSVs are name-only (no admin codes). The boundary set appears to be
+FAO GAUL 2015 Level 2 (schema fingerprint + WFP's institutional standard).
+No public GAUL → OCHA COD pcode crosswalk exists; pcode enrichment is
+deferred to a future geometric-join pipeline using ADAM's per-event
+wind-footprint shapefiles.
 """
 
 import base64
 import json
 import logging
-from functools import lru_cache
 from io import StringIO
 from typing import Any, Dict, List, Literal, Optional
 
@@ -196,7 +165,6 @@ def _get_json(url: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, An
 # ---------------------------------------------------------------------------
 
 
-@lru_cache(maxsize=None)
 def name_to_iso3(name: str) -> Optional[str]:
     """Resolve an ADM0_NAME to ISO 3166-1 alpha-3. Checks the override dict
     first; falls back to pycountry's fuzzy search. Returns None when neither
@@ -265,10 +233,12 @@ def get_events(
     Parameters
     ----------
     from_date, to_date : str, optional
-        Inclusive ``from_date`` filter on the event's ``from_date`` field
-        (ADAM's "first observed" time) and ``to_date`` filter on the latest
-        episode's ``to_date`` (last synoptic time). Both ISO-format strings.
-        Pass None on either to leave that side unbounded.
+        ISO-format strings bounding an inclusive **overlap** window — an
+        event is kept if it was active at any point in [from_date, to_date]
+        (i.e., its ``to_date`` >= window start AND its ``from_date`` <=
+        window end). Pass None on either side to leave that bound open.
+        Strict containment would silently drop storms that started before
+        the window opened.
     source : "NOAA" | "JTWC" | None, default "NOAA"
         Server-side source filter. ADAM aggregates advisory feeds from
         multiple agencies; NOAA covers Atlantic + EPac, JTWC covers

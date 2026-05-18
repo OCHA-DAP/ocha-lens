@@ -182,7 +182,6 @@ def test_make_cumulative_handles_subset_of_columns():
 
 
 def test_name_to_iso3_pycountry_happy_path():
-    adam.name_to_iso3.cache_clear()
     assert adam.name_to_iso3("Bahamas") == "BHS"
     assert adam.name_to_iso3("Mexico") == "MEX"
     assert adam.name_to_iso3("United States of America") == "USA"
@@ -192,7 +191,6 @@ def test_name_to_iso3_override_wins_over_pycountry():
     """Territories whose ADAM name embeds the parent country in parens
     confuse pycountry (it may match either the territory or the parent or
     fail entirely). The hard-coded override is intentional."""
-    adam.name_to_iso3.cache_clear()
     assert adam.name_to_iso3("Puerto Rico (USA)") == "PRI"
     assert adam.name_to_iso3("United States Virgin Islands (USA)") == "VIR"
 
@@ -201,12 +199,10 @@ def test_name_to_iso3_unresolvable_returns_none():
     """Callers (the pipeline) store iso3=None when ADAM gives a name that
     can't be resolved — exit-loud-by-NULL rather than crash. Schema is
     nullable on iso3 to honor this."""
-    adam.name_to_iso3.cache_clear()
     assert adam.name_to_iso3("Definitely-Not-A-Country-XYZ-99") is None
 
 
 def test_name_to_iso3_empty_string_returns_none():
-    adam.name_to_iso3.cache_clear()
     assert adam.name_to_iso3("") is None
 
 
@@ -367,7 +363,6 @@ def test_get_exposure_missing_adm0_column_raises(monkeypatch):
     rows."""
     csv = "ADM1_NAME,POP_60_KMH\nFlorida,1000\n"
     _install_fake_csv_get(monkeypatch, csv)
-    adam.name_to_iso3.cache_clear()
     with pytest.raises(adam.NoExposureCSVError, match="missing ADM0_NAME"):
         adam.get_exposure(event_id=1, population_csv_url="https://example/csv")
 
@@ -378,7 +373,6 @@ def test_get_exposure_no_pop_columns_raises(monkeypatch):
     contract break."""
     csv = "ADM0_NAME,ADM1_NAME,ADM2_NAME\nUSA,Florida,Bay\n"
     _install_fake_csv_get(monkeypatch, csv)
-    adam.name_to_iso3.cache_clear()
     with pytest.raises(adam.NoExposureCSVError, match="missing ADM0_NAME or all"):
         adam.get_exposure(event_id=1, population_csv_url="https://example/csv")
 
@@ -407,7 +401,6 @@ def test_get_exposure_produces_correct_long_form_shape(monkeypatch):
         ("United States of America", "Georgia", "Chatham",       50, 10, 0),
     ])
     _install_fake_csv_get(monkeypatch, csv)
-    adam.name_to_iso3.cache_clear()
 
     out = adam.get_exposure(event_id=1, population_csv_url="https://example/csv")
 
@@ -427,7 +420,6 @@ def test_get_exposure_aggregation_invariant_adm0_equals_sum_adm1(monkeypatch):
         ("United States of America", "Georgia", "Chatham",       50, 10, 0),
     ])
     _install_fake_csv_get(monkeypatch, csv)
-    adam.name_to_iso3.cache_clear()
 
     out = adam.get_exposure(event_id=1, population_csv_url="https://example/csv")
     for kt in [34, 50, 64]:
@@ -454,7 +446,6 @@ def test_get_exposure_applies_cumulative_conversion(monkeypatch):
         ("United States of America", "Florida", "Pinellas",     200, 80, 30),
     ])
     _install_fake_csv_get(monkeypatch, csv)
-    adam.name_to_iso3.cache_clear()
 
     out = adam.get_exposure(event_id=1, population_csv_url="https://example/csv")
     florida_34 = out[
@@ -473,7 +464,6 @@ def test_get_exposure_iso3_attribution(monkeypatch):
         ("Puerto Rico (USA)", "SomeState", "SomeDistrict", 10, 5, 1),
     ])
     _install_fake_csv_get(monkeypatch, csv)
-    adam.name_to_iso3.cache_clear()
 
     out = adam.get_exposure(event_id=1, population_csv_url="https://example/csv")
     assert (out["iso3"] == "PRI").all()
@@ -487,7 +477,6 @@ def test_get_exposure_parent_admin_name_attached(monkeypatch):
         ("United States of America", "Florida", "Hillsborough", 100, 0, 0),
     ])
     _install_fake_csv_get(monkeypatch, csv)
-    adam.name_to_iso3.cache_clear()
 
     out = adam.get_exposure(event_id=1, population_csv_url="https://example/csv")
     adm0 = out[out["admin_level"] == 0].iloc[0]
