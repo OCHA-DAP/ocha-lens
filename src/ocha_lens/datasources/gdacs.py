@@ -454,7 +454,13 @@ def get_timeline(
     for col in _TIMELINE_NUMERIC_COLS:
         df[col] = df[col].replace("", None)
         df[col] = pd.to_numeric(df[col])
-    df["advisory_datetime"] = pd.to_datetime(df["advisory_datetime"])
+    # GDACS timelines mix full and abbreviated month names within the same
+    # event ("01 January 2025" vs "01 Jun 2025"). Bare pd.to_datetime infers
+    # one format from the first row and chokes on the other; format="mixed"
+    # parses each value independently.
+    df["advisory_datetime"] = pd.to_datetime(
+        df["advisory_datetime"], format="mixed",
+    )
     df["advisory_number"] = df["advisory_number"].replace("", None)
     df["advisory_number"] = pd.to_numeric(df["advisory_number"])
     return TIMELINE_SCHEMA.validate(
@@ -551,91 +557,70 @@ def get_exposure_adm1(
 def match_to_atcf(
     timeline: pd.DataFrame,
     nhc_tracks: pd.DataFrame,
-    max_avg_dist_deg: float = 0.1,
+    max_dist_deg: float = 0.05,
 ) -> Optional[str]:
-    """Match a GDACS timeline to an NHC ``atcf_id``.
+    """Match a GDACS event to an NHC ``atcf_id`` via the genesis advisory.
 
-    One pandas join, no strategy ordering, no mode flags. Inner-join
-    GDACS rows to NHC tracks on ``valid_time`` (which is
-    ``advisory_datetime`` on the GDACS side — that field is overloaded
-    to be the issued time on ``actual=True`` rows and the forecast
-    valid_time on ``actual=False`` rows), compute L2 distance per
-    joined row, group by ``atcf_id``, pick the storm with the smallest
-    mean distance.
+    Uses only the GDACS timeline's first advisory (smallest
+    ``advisory_number``) and looks for an NHC row at the **exact**
+    ``valid_time``. A-deck OFCL and the TCM advisories GDACS scrapes
+    are the same NHC forecaster output in different formats, so the
+    position at a shared valid_time must agree byte-for-byte (modulo
+    rounding). Any larger deviation indicates either a different
+    storm or an NHC operational correction — neither should be
+    silently accepted.
 
-    Why it works across A-deck-fed and TCM-fed NHC tables:
+    Why genesis only:
 
-    - A-deck mode: A-deck ``leadtime=0`` rows have ``valid_time`` at
-      synoptic time (e.g. 18Z), but GDACS ``actual=True`` rows have
-      ``advisory_datetime`` at issue time (21Z) — those rows don't
-      collide, so A-deck ``leadtime=0`` naturally drops out of the
-      join. A-deck forecast rows at the same future ``valid_time``
-      as GDACS forecast rows match at ~0 deg.
-    - TCM mode: TCM ``leadtime=0`` ``valid_time`` equals GDACS issue
-      time (both at 21Z) — those rows DO match, contributing another
-      ~0-deg signal. Forecast rows match as in A-deck mode.
-
-    In either mode, the correct storm's joined rows average to
-    ~0 deg; wrong storms produce large mean distances. The smallest
-    aggregate wins.
+    NHC assigns one ``atcf_id`` per storm when it's first designated.
+    If a storm later crosses basins (e.g. OTTO-16, Atlantic → East
+    Pacific), NHC issues a second ``atcf_id`` for the new basin
+    (EP222016). Restricting the comparison to the genesis moment
+    naturally picks the genesis-basin ``atcf_id`` — the later basin's
+    ``atcf_id`` doesn't yet exist then.
 
     Parameters
     ----------
     timeline : DataFrame
-        Output of :func:`get_timeline`. Requires columns
-        ``advisory_datetime`` (used as valid_time for the join),
-        ``latitude``, ``longitude``.
+        Output of :func:`get_timeline`. Required columns:
+        ``advisory_number``, ``advisory_datetime``, ``latitude``,
+        ``longitude``.
     nhc_tracks : DataFrame
-        Caller-loaded NHC track rows. Requires columns ``atcf_id``,
-        ``valid_time``, ``lat``, ``lon``.
-
-        **Caller MUST pre-filter to one row per (atcf_id,
-        valid_time) — the freshest issuance.** If the caller passes
-        multiple issuances' forecasts for the same valid_time, the
-        join averages across stale forecasts and the true match's
-        mean distance inflates well above zero (verified against
-        MILTON-24: stale-forecast contamination drives the correct
-        match's mean from 0.000 to ~3 deg, defeating the tolerance
-        check).
-
-        SQL pattern::
-
-            SELECT DISTINCT ON (atcf_id, valid_time)
-                   atcf_id, valid_time, ST_Y(geom) lat, ST_X(geom) lon
-            FROM storms.nhc_tracks_geo
-            WHERE ...
-            ORDER BY atcf_id, valid_time, issued_time DESC
-    max_avg_dist_deg : float, default 0.1
-        Maximum acceptable mean L2 distance across joined rows for
-        the winning ``atcf_id``. True matches are ~0.000 deg.
+        NHC tracks deduped to one row per ``(atcf_id, valid_time)``
+        at the freshest issuance — required so a stale issuance for
+        the same valid_time doesn't shadow the freshest one. Required
+        columns: ``atcf_id``, ``valid_time``, ``lat``, ``lon``. See
+        ``load_freshest_nhc_tracks`` in the pipeline.
+    max_dist_deg : float, default 0.05
+        Spatial tolerance in degrees. Default 0.05° absorbs only
+        rounding artifacts between A-deck and TCM. Larger deviations
+        are real (operational corrections or wrong-storm overlap)
+        and we'd rather return ``None`` than match incorrectly.
 
     Returns
     -------
-    atcf_id (e.g. ``"AL142024"``) or ``None`` if no candidate
-    averages within tolerance (or if the join is empty).
+    atcf_id (e.g. ``"AL142024"``) or ``None`` if the timeline is
+    empty, no NHC row shares the genesis valid_time, or the closest
+    candidate exceeds the spatial tolerance. ``None`` is the correct
+    answer when our NHC backfill is missing rows at the genesis
+    cycle — preferable to a guess.
     """
-    g = timeline[["advisory_datetime", "latitude", "longitude"]].rename(
-        columns={
-            "advisory_datetime": "valid_time",
-            "latitude": "g_lat",
-            "longitude": "g_lon",
-        }
-    )
-    joined = g.merge(
-        nhc_tracks[["atcf_id", "valid_time", "lat", "lon"]],
-        on="valid_time",
-        how="inner",
-    )
-    if len(joined) == 0:
+    if len(timeline) == 0:
         return None
-    joined["dist"] = np.sqrt(
-        (joined["g_lat"] - joined["lat"]) ** 2
-        + (joined["g_lon"] - joined["lon"]) ** 2
-    )
-    agg = joined.groupby("atcf_id")["dist"].mean().sort_values()
-    if agg.iloc[0] > max_avg_dist_deg:
+    genesis = timeline.sort_values("advisory_number").iloc[0]
+    candidates = nhc_tracks[
+        nhc_tracks["valid_time"] == genesis.advisory_datetime
+    ]
+    if candidates.empty:
         return None
-    return agg.index[0]
+    dist = np.sqrt(
+        (candidates["lat"] - genesis.latitude) ** 2
+        + (candidates["lon"] - genesis.longitude) ** 2
+    )
+    best_idx = dist.idxmin()
+    if dist.loc[best_idx] > max_dist_deg:
+        return None
+    return candidates.loc[best_idx, "atcf_id"]
 
 
 def _exposure_per_buffer(
@@ -733,20 +718,25 @@ def _parse_adm1(data: Dict[str, Any]) -> pd.DataFrame:
     )
 
 
-# GDACS uses -99999 as a sentinel for "no data" in numeric scalar
-# fields (POP_AFFECTED, POP_ADMIN, distance). Normalized to None
-# here so downstream code sees one consistent missing representation.
-_GDACS_MISSING_SENTINEL = -99999
+# GDACS uses a couple of distinct "no data" sentinels in numeric scalar
+# fields (POP_AFFECTED, POP_ADMIN, distance). Both normalize to None so
+# downstream code sees one consistent missing representation.
+#   -99999 : structurally missing (e.g., field absent or zeroed-out)
+#   -1     : "data unavailable / not computed" (observed for POP_AFFECTED
+#            on some admin1 rows where POP_ADMIN itself is a real number,
+#            e.g. MARIO-25 over Baja California Sur)
+_GDACS_MISSING_SENTINELS = {-99999, -1}
 
 
 def _to_nullable(value: Any, coerce) -> Any:
     """Cast a GDACS scalar via ``coerce(float(value))``, normalizing
-    None, empty string, and the -99999 sentinel to None. ``coerce``
-    is the type-specific cast (e.g. ``int`` or ``lambda v: round(v, 1)``)."""
+    None, empty string, and the GDACS missing-data sentinels to None.
+    ``coerce`` is the type-specific cast (e.g. ``int`` or
+    ``lambda v: round(v, 1)``)."""
     if value is None or value == "":
         return None
     out = coerce(float(value))
-    if out == _GDACS_MISSING_SENTINEL:
+    if out in _GDACS_MISSING_SENTINELS:
         return None
     return out
 
