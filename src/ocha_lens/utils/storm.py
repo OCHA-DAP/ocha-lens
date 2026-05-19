@@ -1,11 +1,13 @@
 from typing import Tuple
 
+import antimeridian
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 from scipy.interpolate import PchipInterpolator
 from shapely import Polygon
-from shapely.geometry import MultiPolygon, Point, box
+from shapely.geometry import MultiPolygon, Point
+from shapely.validation import make_valid
 
 QUADS = ["ne", "se", "sw", "nw"]
 NM_TO_M = 1.852 * 1000
@@ -426,8 +428,19 @@ def calculate_wind_buffers_gdf(
     result = gpd.GeoDataFrame(dicts, geometry=geoms, crs=proj_crs).to_crs(
         "EPSG:4326"
     )
-    world = box(-180, -90, 180, 90)
-    result.geometry = result.geometry.intersection(world)
+
+    # After projecting back from the basin-specific lon_wrap CRS, polygons
+    # whose tracks crossed the dateline may have vertices that interpret as
+    # the wrong way around the globe (180° lon span) or self-intersect at
+    # the dateline. make_valid + antimeridian.fix_shape together (a) repair
+    # the self-intersection and (b) split the polygon into a MultiPolygon
+    # with parts on each side of ±180.
+    def _fix(g):
+        if g is None or g.is_empty:
+            return g
+        return antimeridian.fix_shape(make_valid(g))
+
+    result.geometry = result.geometry.apply(_fix)
     return result
 
 

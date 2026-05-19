@@ -14,13 +14,15 @@ alabaster==1.0.0
     # via sphinx
 annotated-types==0.7.0
     # via pydantic
+antimeridian==0.4.7
+    # via ocha-lens (pyproject.toml)
 attrs==26.1.0
     # via
     #   aiohttp
     #   rasterio
-azure-core==1.39.0
+azure-core==1.41.0
     # via azure-storage-blob
-azure-storage-blob==12.28.0
+azure-storage-blob==12.29.0
     # via ocha-stratus
 babel==2.18.0
     # via sphinx
@@ -43,7 +45,7 @@ cftime==1.6.5
     # via netcdf4
 charset-normalizer==3.4.7
     # via requests
-click==8.3.3
+click==8.4.0
     # via
     #   cligj
     #   dask
@@ -52,7 +54,7 @@ cligj==0.7.2
     # via rasterio
 cloudpickle==3.1.2
     # via dask
-cryptography==47.0.0
+cryptography==48.0.0
     # via azure-storage-blob
 dask==2026.3.0
     # via ocha-stratus
@@ -84,7 +86,7 @@ geopandas==1.1.3
     #   ocha-stratus
 identify==2.6.19
     # via pre-commit
-idna==3.13
+idna==3.15
     # via
     #   requests
     #   yarl
@@ -103,15 +105,15 @@ lat-lon-parser==1.3.1
     # via ocha-lens (pyproject.toml)
 locket==1.0.0
     # via partd
-lxml==6.1.0
+lxml==6.1.1
     # via ocha-lens (pyproject.toml)
-markdown-it-py==4.0.0
+markdown-it-py==4.2.0
     # via
     #   mdit-py-plugins
     #   myst-parser
 markupsafe==3.0.3
     # via jinja2
-mdit-py-plugins==0.5.0
+mdit-py-plugins==0.6.1
     # via myst-parser
 mdurl==0.1.2
     # via markdown-it-py
@@ -121,14 +123,15 @@ multidict==6.7.1
     #   yarl
 mypy-extensions==1.1.0
     # via typing-inspect
-myst-parser==5.0.0
+myst-parser==5.1.0
     # via ocha-lens (pyproject.toml)
 netcdf4==1.7.4
     # via ocha-lens (pyproject.toml)
 nodeenv==1.10.0
     # via pre-commit
-numpy==2.4.4
+numpy==2.4.6
     # via
+    #   antimeridian
     #   cftime
     #   geopandas
     #   netcdf4
@@ -151,7 +154,7 @@ packaging==26.2
     #   rioxarray
     #   sphinx
     #   xarray
-pandas==3.0.2
+pandas==3.0.3
     # via
     #   ocha-lens (pyproject.toml)
     #   geopandas
@@ -169,7 +172,7 @@ pluggy==1.6.0
     # via pytest
 pre-commit==4.6.0
     # via ocha-lens (pyproject.toml)
-propcache==0.4.1
+propcache==0.5.2
     # via
     #   aiohttp
     #   yarl
@@ -179,9 +182,9 @@ pyarrow==24.0.0
     # via ocha-stratus
 pycparser==3.0
     # via cffi
-pydantic==2.13.3
+pydantic==2.13.4
     # via pandera
-pydantic-core==2.46.3
+pydantic-core==2.46.4
     # via pydantic
 pygments==2.20.0
     # via
@@ -201,7 +204,7 @@ pytest==9.0.3
     # via ocha-lens (pyproject.toml)
 python-dateutil==2.9.0.post0
     # via pandas
-python-discovery==1.2.2
+python-discovery==1.3.1
     # via virtualenv
 python-dotenv==1.2.2
     # via ocha-lens (pyproject.toml)
@@ -212,7 +215,7 @@ pyyaml==6.0.3
     #   pre-commit
 rasterio==1.5.0
     # via rioxarray
-requests==2.33.1
+requests==2.34.2
     # via
     #   ocha-lens (pyproject.toml)
     #   azure-core
@@ -221,12 +224,14 @@ rioxarray==0.22.0
     # via ocha-stratus
 roman-numerals==4.1.0
     # via sphinx
-ruff==0.15.12
+ruff==0.15.13
     # via ocha-lens (pyproject.toml)
 scipy==1.17.1
     # via ocha-lens (pyproject.toml)
 shapely==2.1.2
-    # via geopandas
+    # via
+    #   antimeridian
+    #   geopandas
 six==1.17.0
     # via python-dateutil
 snowballstemmer==3.0.1
@@ -264,7 +269,7 @@ toolz==1.1.0
     #   partd
 tqdm==4.67.3
     # via ocha-stratus
-typeguard==4.5.1
+typeguard==4.5.2
     # via pandera
 typing-extensions==4.15.0
     # via
@@ -283,9 +288,9 @@ typing-inspect==0.9.0
     # via pandera
 typing-inspection==0.4.2
     # via pydantic
-urllib3==2.6.3
+urllib3==2.7.0
     # via requests
-virtualenv==21.3.0
+virtualenv==21.3.3
     # via pre-commit
 xarray==2026.4.0
     # via
