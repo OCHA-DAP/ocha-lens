@@ -432,13 +432,19 @@ def calculate_wind_buffers_gdf(
     # After projecting back from the basin-specific lon_wrap CRS, polygons
     # whose tracks crossed the dateline may have vertices that interpret as
     # the wrong way around the globe (180° lon span) or self-intersect at
-    # the dateline. make_valid + antimeridian.fix_shape together (a) repair
-    # the self-intersection and (b) split the polygon into a MultiPolygon
-    # with parts on each side of ±180.
+    # the dateline. make_valid + antimeridian fix together (a) repair the
+    # self-intersection and (b) split the polygon into a MultiPolygon with
+    # parts on each side of ±180. Use the type-aware variants so we get
+    # shapely geometries back (fix_shape returns a GeoJSON dict).
     def _fix(g):
         if g is None or g.is_empty:
             return g
-        return antimeridian.fix_shape(make_valid(g))
+        g = make_valid(g)
+        if g.geom_type == "Polygon":
+            return antimeridian.fix_polygon(g)
+        if g.geom_type == "MultiPolygon":
+            return antimeridian.fix_multi_polygon(g)
+        return g
 
     result.geometry = result.geometry.apply(_fix)
     return result
