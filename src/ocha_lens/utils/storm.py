@@ -432,20 +432,41 @@ def calculate_wind_buffers_gdf(
     # After projecting back from the basin-specific lon_wrap CRS, polygons
     # whose tracks crossed the dateline have vertices that shapely
     # interprets as the wrong way around the globe (180° lon span). Apply
-    # antimeridian.fix_polygon / fix_multi_polygon BEFORE make_valid:
-    # fix_polygon understands the dateline-crossing semantics and splits
-    # cleanly at ±180. make_valid first would misinterpret the wraparound
-    # as a self-intersection and slice the polygon along latitude lines
-    # to "resolve" it — producing more parts than necessary.
-    # make_valid runs after only as a fallback for genuine topology issues
-    # that survive antimeridian.fix.
+    # antimeridian.fix_polygon BEFORE make_valid: fix_polygon understands
+    # the dateline-crossing semantics and splits cleanly at ±180.
+    # make_valid first would misinterpret the wraparound as a self-
+    # intersection and slice the polygon along latitude lines to "resolve"
+    # it — producing more parts than necessary.
+    #
+    # Per-part handling: antimeridian.fix_multi_polygon iterates each part
+    # and raises on any degenerate sub-polygon (fewer than 4 unique
+    # vertices after dedup), poisoning the whole MultiPolygon. We iterate
+    # ourselves and fall back to the original part on per-part failure.
+    def _fix_one(p):
+        try:
+            # fix_winding=True silences FixWindingWarning while keeping the
+            # winding-reversal behavior (which is what we want for shapely
+            # polygons that come out clockwise from the projected CRS).
+            return antimeridian.fix_polygon(p, fix_winding=True)
+        except ValueError:
+            # Degenerate (e.g. <4 unique vertices after dedup) — skip
+            # antimeridian and let make_valid below handle anything else.
+            return p
+
     def _fix(g):
         if g is None or g.is_empty:
             return g
         if g.geom_type == "Polygon":
-            g = antimeridian.fix_polygon(g)
+            g = _fix_one(g)
         elif g.geom_type == "MultiPolygon":
-            g = antimeridian.fix_multi_polygon(g)
+            parts = []
+            for p in g.geoms:
+                fixed = _fix_one(p)
+                if fixed.geom_type == "Polygon":
+                    parts.append(fixed)
+                elif fixed.geom_type == "MultiPolygon":
+                    parts.extend(list(fixed.geoms))
+            g = MultiPolygon(parts) if parts else g
         if not g.is_valid:
             g = make_valid(g)
         return g
