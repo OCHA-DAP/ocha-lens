@@ -222,13 +222,20 @@ def get_events(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
     source: Optional[Literal["NOAA", "JTWC"]] = "NOAA",
+    all_episodes: bool = False,
 ) -> pd.DataFrame:
-    """Fetch the ADAM TC event list, deduped to one row (latest episode) per
-    event_id.
+    """Fetch the ADAM TC event list.
 
-    ADAM exposes a global, paginated /items endpoint. Date filtering happens
-    client-side after pagination (the server-side OGC filter syntax is awkward
-    for date ranges); ``source`` is a server-side param.
+    ADAM's ``/items`` endpoint returns one feature per *(event, episode)*.
+    By default we dedupe to the latest episode per ``event_id`` (cumulative
+    snapshot at storm end). Pass ``all_episodes=True`` to skip the dedupe
+    and return every episode-feature — the per-episode ``to_date`` is the
+    snapshot's effective time and each row carries its own
+    ``population_csv_url``.
+
+    Date filtering happens client-side after pagination (the server-side
+    OGC filter syntax is awkward for date ranges); ``source`` is a
+    server-side param.
 
     Parameters
     ----------
@@ -243,11 +250,16 @@ def get_events(
         Server-side source filter. ADAM aggregates advisory feeds from
         multiple agencies; NOAA covers Atlantic + EPac, JTWC covers
         WPac + IO + SHem. Pass None to fetch all sources.
+    all_episodes : bool, default False
+        When True, return every (event_id, episode_id) row rather than
+        deduping to the latest episode. Increases row count by ~N×
+        (N = avg episodes per event, ~10–50).
 
     Returns
     -------
     pandas.DataFrame
-        One row per event_id (latest episode), columns per EVENT_SCHEMA.
+        One row per event_id (default) or per (event_id, episode_id)
+        (``all_episodes=True``), columns per EVENT_SCHEMA.
     """
     all_items: List[Dict[str, Any]] = []
     offset = 0
@@ -277,7 +289,8 @@ def get_events(
         return EVENT_SCHEMA.validate(pd.DataFrame(columns=_EVENT_COLS))
 
     df = pd.DataFrame(all_items)
-    df = _latest_episode_per_event(df)
+    if not all_episodes:
+        df = _latest_episode_per_event(df)
 
     # Client-side date filter (ADAM's OGC date-range filter is unreliable).
     # An event "overlaps" the window if it ended on/after window start AND
