@@ -1113,6 +1113,23 @@ def _process_nhc_to_df(
     for col in ("valid_time", "issued_time"):
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], utc=True)
+    # Coerce numeric columns. Forecast points set pd.NA for fields not in
+    # the advisory text (e.g. pressure); mixing pd.NA with floats yields
+    # object dtype, which pandera can't coerce to float64. pd.to_numeric
+    # turns pd.NA into NaN for float columns; Int64 columns get the
+    # nullable-int dtype explicitly so pd.NA is preserved.
+    for col in ("wind_speed", "pressure"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    for col in (
+        "leadtime",
+        "max_wind_radius",
+        "last_closed_isobar_radius",
+        "last_closed_isobar_pressure",
+        "gust_speed",
+    ):
+        if col in df.columns:
+            df[col] = pd.array(df[col], dtype="Int64")
     return df
 
 
