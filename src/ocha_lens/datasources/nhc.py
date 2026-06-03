@@ -1104,7 +1104,36 @@ def _process_nhc_to_df(
         return pd.DataFrame(columns=BASE_COLUMNS)
 
     logger.info(f"Extracted {len(all_records)} total records")
-    return pd.DataFrame(all_records)
+    df = pd.DataFrame(all_records)
+    # Coerce datetime columns to naive UTC. Observation rows (from
+    # pd.Timestamp(...Z)) and forecast rows (from dateparser +
+    # relativedelta) can end up with mismatched tz state under some
+    # pandas/dateutil versions, yielding object dtype and breaking
+    # downstream .dt accessors. Normalize to UTC and then drop the tz so
+    # the column is plain datetime64[ns] — matches the storms DB schema
+    # (TIMESTAMP without time zone) and avoids tz-aware/naive comparison
+    # mismatches in downstream filters.
+    for col in ("valid_time", "issued_time"):
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], utc=True).dt.tz_localize(None)
+    # Coerce numeric columns. Forecast points set pd.NA for fields not in
+    # the advisory text (e.g. pressure); mixing pd.NA with floats yields
+    # object dtype, which pandera can't coerce to float64. pd.to_numeric
+    # turns pd.NA into NaN for float columns; Int64 columns get the
+    # nullable-int dtype explicitly so pd.NA is preserved.
+    for col in ("wind_speed", "pressure"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    for col in (
+        "leadtime",
+        "max_wind_radius",
+        "last_closed_isobar_radius",
+        "last_closed_isobar_pressure",
+        "gust_speed",
+    ):
+        if col in df.columns:
+            df[col] = pd.array(df[col], dtype="Int64")
+    return df
 
 
 # Public API Functions
@@ -1546,8 +1575,14 @@ def get_storms(df: pd.DataFrame) -> pd.DataFrame:
 
     df_ = df.copy()
 
-    # Calculate season from valid_time
-    df_["season"] = df_["valid_time"].dt.year
+    # Calculate season from valid_time (coerce via tz-aware UTC and then
+    # drop the tz, in case the column came in as object dtype from mixed
+    # tz-aware / tz-naive rows)
+    df_["season"] = (
+        pd.to_datetime(df_["valid_time"], utc=True)
+        .dt.tz_localize(None)
+        .dt.year
+    )
 
     # Group by atcf_id to get one row per storm
     df_storms = (
