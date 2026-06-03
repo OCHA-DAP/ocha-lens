@@ -1105,14 +1105,17 @@ def _process_nhc_to_df(
 
     logger.info(f"Extracted {len(all_records)} total records")
     df = pd.DataFrame(all_records)
-    # Coerce datetime columns to tz-aware UTC. Without this, observation
-    # rows (from pd.Timestamp(...Z)) and forecast rows (from dateparser +
+    # Coerce datetime columns to naive UTC. Observation rows (from
+    # pd.Timestamp(...Z)) and forecast rows (from dateparser +
     # relativedelta) can end up with mismatched tz state under some
     # pandas/dateutil versions, yielding object dtype and breaking
-    # downstream .dt accessors.
+    # downstream .dt accessors. Normalize to UTC and then drop the tz so
+    # the column is plain datetime64[ns] — matches the storms DB schema
+    # (TIMESTAMP without time zone) and avoids tz-aware/naive comparison
+    # mismatches in downstream filters.
     for col in ("valid_time", "issued_time"):
         if col in df.columns:
-            df[col] = pd.to_datetime(df[col], utc=True)
+            df[col] = pd.to_datetime(df[col], utc=True).dt.tz_localize(None)
     # Coerce numeric columns. Forecast points set pd.NA for fields not in
     # the advisory text (e.g. pressure); mixing pd.NA with floats yields
     # object dtype, which pandera can't coerce to float64. pd.to_numeric
@@ -1572,9 +1575,14 @@ def get_storms(df: pd.DataFrame) -> pd.DataFrame:
 
     df_ = df.copy()
 
-    # Calculate season from valid_time (coerce to tz-aware UTC in case the
-    # column came in as object dtype from mixed tz-aware / tz-naive rows)
-    df_["season"] = pd.to_datetime(df_["valid_time"], utc=True).dt.year
+    # Calculate season from valid_time (coerce via tz-aware UTC and then
+    # drop the tz, in case the column came in as object dtype from mixed
+    # tz-aware / tz-naive rows)
+    df_["season"] = (
+        pd.to_datetime(df_["valid_time"], utc=True)
+        .dt.tz_localize(None)
+        .dt.year
+    )
 
     # Group by atcf_id to get one row per storm
     df_storms = (
