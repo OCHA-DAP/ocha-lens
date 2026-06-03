@@ -1104,7 +1104,16 @@ def _process_nhc_to_df(
         return pd.DataFrame(columns=BASE_COLUMNS)
 
     logger.info(f"Extracted {len(all_records)} total records")
-    return pd.DataFrame(all_records)
+    df = pd.DataFrame(all_records)
+    # Coerce datetime columns to tz-aware UTC. Without this, observation
+    # rows (from pd.Timestamp(...Z)) and forecast rows (from dateparser +
+    # relativedelta) can end up with mismatched tz state under some
+    # pandas/dateutil versions, yielding object dtype and breaking
+    # downstream .dt accessors.
+    for col in ("valid_time", "issued_time"):
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], utc=True)
+    return df
 
 
 # Public API Functions
@@ -1546,8 +1555,9 @@ def get_storms(df: pd.DataFrame) -> pd.DataFrame:
 
     df_ = df.copy()
 
-    # Calculate season from valid_time
-    df_["season"] = df_["valid_time"].dt.year
+    # Calculate season from valid_time (coerce to tz-aware UTC in case the
+    # column came in as object dtype from mixed tz-aware / tz-naive rows)
+    df_["season"] = pd.to_datetime(df_["valid_time"], utc=True).dt.year
 
     # Group by atcf_id to get one row per storm
     df_storms = (
