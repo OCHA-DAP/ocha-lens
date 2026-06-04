@@ -20,6 +20,7 @@ Endpoints
 """
 
 import logging
+from collections import Counter
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import geopandas as gpd
@@ -554,73 +555,181 @@ def get_exposure_adm1(
     )
 
 
+def _is_actual(actual: pd.Series) -> pd.Series:
+    """Boolean mask for observed (vs forecast) advisories.
+
+    GDACS stores ``actual`` as a string (``"True"``/``"False"``);
+    compare case-insensitively rather than trusting the dtype.
+    """
+    return actual.astype(str).str.lower() == "true"
+
+
+def _split_timeline(
+    timeline: pd.DataFrame,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Split a GDACS timeline into ``(observed, forecast)`` advisories.
+
+    Each timeline row is flagged ``actual``: observed positions
+    (``actual="True"``) and forecast-cone positions
+    (``actual="False"``). The two are matched differently — see
+    :func:`match_to_atcf`.
+    """
+    actual_mask = _is_actual(timeline["actual"])
+    return timeline[actual_mask], timeline[~actual_mask]
+
+
+def _nearest_atcf_at(
+    valid_time: pd.Timestamp,
+    lat: float,
+    lon: float,
+    nhc_tracks: pd.DataFrame,
+    max_dist_deg: float,
+) -> Optional[str]:
+    """Closest NHC ``atcf_id`` to ``(lat, lon)`` among rows at exactly
+    ``valid_time``.
+
+    The shared primitive behind both matching strategies. Returns the
+    ``atcf_id`` of the nearest row within ``max_dist_deg``, or
+    ``None`` when no NHC row shares the timestamp or the closest one
+    is too far.
+    """
+    at_time = nhc_tracks[nhc_tracks["valid_time"] == valid_time]
+    if at_time.empty:
+        return None
+    dist = np.sqrt((at_time["lat"] - lat) ** 2 + (at_time["lon"] - lon) ** 2)
+    best_idx = dist.idxmin()
+    if dist.loc[best_idx] > max_dist_deg:
+        return None
+    return at_time.loc[best_idx, "atcf_id"]
+
+
+def _match_by_forecast_cone(
+    forecast: pd.DataFrame,
+    nhc_tracks: pd.DataFrame,
+    max_dist_deg: float,
+) -> Optional[str]:
+    """Strategy 1 (primary) — match on the shared forecast cone.
+
+    A GDACS forecast point and the NHC forecast for the same
+    ``valid_time`` are the *same* NHC forecast package (GDACS scrapes
+    the TCM advisory, which carries the synoptic A-deck cone forward
+    unchanged), so for the correct storm they agree to ~0°. Each
+    forecast point that lands on an NHC row casts a vote for its
+    ``atcf_id``; the most-voted ``atcf_id`` wins.
+
+    Voting across the whole cone is what makes this robust: a wrong
+    storm would have to share an exact forecast position at the same
+    valid_time, which doesn't happen. It also self-heals late
+    captures — it never needs the genesis cycle, only the cone of
+    whatever advisory we did capture.
+
+    Ties (a basin-crossing storm whose cone touches two ``atcf_id``s)
+    go to the earliest ``valid_time``, i.e. the genesis basin.
+    """
+    votes = [
+        atcf
+        for _, row in forecast.sort_values("advisory_datetime").iterrows()
+        if (
+            atcf := _nearest_atcf_at(
+                row["advisory_datetime"],
+                row["latitude"],
+                row["longitude"],
+                nhc_tracks,
+                max_dist_deg,
+            )
+        )
+        is not None
+    ]
+    if not votes:
+        return None
+    counts = Counter(votes)
+    most_votes = max(counts.values())
+    leaders = {atcf for atcf, n in counts.items() if n == most_votes}
+    # votes is in valid_time order, so the first leader encountered is
+    # the earliest-matching (genesis-basin) atcf_id.
+    return next(atcf for atcf in votes if atcf in leaders)
+
+
+def _match_by_genesis(
+    observed: pd.DataFrame,
+    nhc_tracks: pd.DataFrame,
+    max_dist_deg: float,
+) -> Optional[str]:
+    """Strategy 2 (fallback) — match the genesis observed position.
+
+    Used only when the timeline carries no forecast cone (e.g. a
+    dissipated storm pulled from the archive). Takes the genesis
+    advisory (smallest ``advisory_number``) and requires an NHC row
+    at that exact ``valid_time``. It's a single point, so it depends
+    on that one genesis cycle being present in ``nhc_tracks`` — which
+    is exactly why it's the fallback, not the primary.
+    """
+    if observed.empty:
+        return None
+    genesis = observed.sort_values("advisory_number").iloc[0]
+    return _nearest_atcf_at(
+        genesis["advisory_datetime"],
+        genesis["latitude"],
+        genesis["longitude"],
+        nhc_tracks,
+        max_dist_deg,
+    )
+
+
 def match_to_atcf(
     timeline: pd.DataFrame,
     nhc_tracks: pd.DataFrame,
     max_dist_deg: float = 0.05,
 ) -> Optional[str]:
-    """Match a GDACS event to an NHC ``atcf_id`` via the genesis advisory.
+    """Match a GDACS event to an NHC ``atcf_id``.
 
-    Uses only the GDACS timeline's first advisory (smallest
-    ``advisory_number``) and looks for an NHC row at the **exact**
-    ``valid_time``. A-deck OFCL and the TCM advisories GDACS scrapes
-    are the same NHC forecaster output in different formats, so the
-    position at a shared valid_time must agree byte-for-byte (modulo
-    rounding). Any larger deviation indicates either a different
-    storm or an NHC operational correction — neither should be
-    silently accepted.
+    GDACS and our NHC table are two views of the *same* NHC
+    forecaster output (GDACS scrapes the TCM Forecast/Advisory; we
+    store the A-deck OFCL). They're timestamped 3h apart — A-deck on
+    synoptic valid times (00/06/12/18Z), TCM on advisory issue times
+    (03/09/15/21Z) — but the **forecast cone (t>0) is identical
+    between them at shared valid_times**. Only the observed t=0
+    position differs (the storm moved in the intervening 3h).
 
-    Why genesis only:
+    That asymmetry drives a two-strategy match:
 
-    NHC assigns one ``atcf_id`` per storm when it's first designated.
-    If a storm later crosses basins (e.g. OTTO-16, Atlantic → East
-    Pacific), NHC issues a second ``atcf_id`` for the new basin
-    (EP222016). Restricting the comparison to the genesis moment
-    naturally picks the genesis-basin ``atcf_id`` — the later basin's
-    ``atcf_id`` doesn't yet exist then.
+    1. :func:`_match_by_forecast_cone` (primary) — vote the GDACS
+       forecast points onto NHC ``atcf_id``s by exact valid_time.
+       Robust (many points), product-agnostic, and self-healing for
+       storms whose first advisories we never captured.
+    2. :func:`_match_by_genesis` (fallback) — single-point match on
+       the genesis observed advisory, for completed storms whose
+       timeline has no forecast cone left.
 
     Parameters
     ----------
     timeline : DataFrame
         Output of :func:`get_timeline`. Required columns:
-        ``advisory_number``, ``advisory_datetime``, ``latitude``,
-        ``longitude``.
+        ``advisory_number``, ``actual``, ``advisory_datetime``,
+        ``latitude``, ``longitude``.
     nhc_tracks : DataFrame
         NHC tracks deduped to one row per ``(atcf_id, valid_time)``
-        at the freshest issuance — required so a stale issuance for
-        the same valid_time doesn't shadow the freshest one. Required
-        columns: ``atcf_id``, ``valid_time``, ``lat``, ``lon``. See
+        at the freshest issuance (all leadtimes kept — the forecast
+        cone lives at leadtime>0). Required columns: ``atcf_id``,
+        ``valid_time``, ``lat``, ``lon``. See
         ``load_freshest_nhc_tracks`` in the pipeline.
     max_dist_deg : float, default 0.05
-        Spatial tolerance in degrees. Default 0.05° absorbs only
-        rounding artifacts between A-deck and TCM. Larger deviations
-        are real (operational corrections or wrong-storm overlap)
-        and we'd rather return ``None`` than match incorrectly.
+        Spatial tolerance in degrees. Cone matches for the correct
+        storm are ~0°; 0.05° absorbs only rounding. Robustness comes
+        from voting across the cone, not from a loose tolerance.
 
     Returns
     -------
-    atcf_id (e.g. ``"AL142024"``) or ``None`` if the timeline is
-    empty, no NHC row shares the genesis valid_time, or the closest
-    candidate exceeds the spatial tolerance. ``None`` is the correct
-    answer when our NHC backfill is missing rows at the genesis
-    cycle — preferable to a guess.
+    atcf_id (e.g. ``"AL142024"``) or ``None`` when neither strategy
+    finds a match — the correct answer for a non-NHC (JTWC/RSMC)
+    storm or a genuine gap in our NHC table.
     """
-    if len(timeline) == 0:
+    if timeline.empty or nhc_tracks.empty:
         return None
-    genesis = timeline.sort_values("advisory_number").iloc[0]
-    candidates = nhc_tracks[
-        nhc_tracks["valid_time"] == genesis.advisory_datetime
-    ]
-    if candidates.empty:
-        return None
-    dist = np.sqrt(
-        (candidates["lat"] - genesis.latitude) ** 2
-        + (candidates["lon"] - genesis.longitude) ** 2
-    )
-    best_idx = dist.idxmin()
-    if dist.loc[best_idx] > max_dist_deg:
-        return None
-    return candidates.loc[best_idx, "atcf_id"]
+    observed, forecast = _split_timeline(timeline)
+    return _match_by_forecast_cone(
+        forecast, nhc_tracks, max_dist_deg
+    ) or _match_by_genesis(observed, nhc_tracks, max_dist_deg)
 
 
 def _exposure_per_buffer(

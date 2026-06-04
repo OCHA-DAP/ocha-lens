@@ -1,18 +1,20 @@
 """Unit tests for the GDACS↔NHC ATCF matching function in
 ocha_lens.datasources.gdacs.
 
-The matcher uses the GDACS event's genesis advisory (smallest
-``advisory_number``) and requires an EXACT ``valid_time`` match in
-``nhc_tracks``. A-deck OFCL and the TCM advisories GDACS scrapes
-are NHC's same forecaster output in different formats — so the
-position at a shared valid_time agrees byte-for-byte modulo rounding.
+The matcher is two-strategy:
 
-Default spatial tolerance is rounding-only (0.05°). Larger deltas
-are either NHC operational corrections or wrong-storm overlap, and
-the matcher returns ``None`` rather than accept them.
+1. Forecast cone (primary) — votes the GDACS forecast points
+   (``actual="false"``) onto NHC ``atcf_id``s by exact valid_time.
+   GDACS (TCM) and our NHC table (A-deck) carry the *same* forecast
+   cone, so the correct storm agrees to ~0°; the most-voted
+   ``atcf_id`` wins, ties go to the earliest valid_time.
+2. Genesis (fallback) — single-point match on the genesis observed
+   advisory, used only when the timeline has no forecast cone.
 
-Multi-basin storms are handled implicitly: the second basin's
-``atcf_id`` doesn't yet have a row at the genesis valid_time.
+Default spatial tolerance is rounding-only (0.05°); robustness comes
+from voting across the cone, not a loose tolerance. Wrong-storm
+overlap and NHC operational corrections fall outside it and yield
+``None``.
 """
 
 import pandas as pd
@@ -28,6 +30,11 @@ def _gdacs_row(advisory_number, time, lat, lon, actual=True):
         "latitude": lat,
         "longitude": lon,
     }
+
+
+def _gdacs_forecast(advisory_number, time, lat, lon):
+    """A forecast-cone row (``actual="false"``)."""
+    return _gdacs_row(advisory_number, time, lat, lon, actual=False)
 
 
 def _nhc_row(atcf_id, valid_time, lat, lon):
@@ -163,3 +170,73 @@ def test_empty_nhc_returns_none():
         columns=["atcf_id", "valid_time", "lat", "lon"]
     )
     assert match_to_atcf(gdacs, empty_nhc) is None
+
+
+# --- Strategy 1: forecast-cone matching -----------------------------
+
+
+def test_forecast_cone_matches_when_genesis_missing():
+    """AMANDA-26 archetype: we never captured the storm's genesis
+    advisory, so no NHC row exists at the genesis valid_time. The
+    shared forecast cone still pins the atcf_id."""
+    gdacs = pd.DataFrame([
+        _gdacs_row(1, "2026-06-02 21:00", 9.4, -126.7),  # genesis, unseen
+        _gdacs_forecast(5, "2026-06-05 00:00", 12.0, -132.0),
+        _gdacs_forecast(5, "2026-06-05 12:00", 12.5, -134.0),
+        _gdacs_forecast(5, "2026-06-06 00:00", 13.0, -136.0),
+    ])
+    nhc = pd.DataFrame([
+        # nothing at 2026-06-02 21:00 — the genesis cycle we missed
+        _nhc_row("EP012026", "2026-06-05 00:00", 12.0, -132.0),
+        _nhc_row("EP012026", "2026-06-05 12:00", 12.5, -134.0),
+        _nhc_row("EP012026", "2026-06-06 00:00", 13.0, -136.0),
+    ])
+    assert match_to_atcf(gdacs, nhc) == "EP012026"
+
+
+def test_forecast_cone_picks_majority_storm():
+    """Most forecast points agree with one atcf_id; a lone near-
+    coincidence with a concurrent storm can't outvote it (and the
+    nearest-per-point rule rejects it anyway)."""
+    gdacs = pd.DataFrame([
+        _gdacs_forecast(3, "2024-10-05 00:00", 20.0, -80.0),
+        _gdacs_forecast(3, "2024-10-05 12:00", 21.0, -81.0),
+        _gdacs_forecast(3, "2024-10-06 00:00", 22.0, -82.0),
+    ])
+    nhc = pd.DataFrame([
+        _nhc_row("AL142024", "2024-10-05 00:00", 20.0, -80.0),
+        _nhc_row("AL142024", "2024-10-05 12:00", 21.0, -81.0),
+        _nhc_row("AL142024", "2024-10-06 00:00", 22.0, -82.0),
+        # concurrent storm, only near the first point and still
+        # farther than AL14's exact hit
+        _nhc_row("AL152024", "2024-10-05 00:00", 20.04, -80.0),
+    ])
+    assert match_to_atcf(gdacs, nhc) == "AL142024"
+
+
+def test_forecast_cone_tie_breaks_to_genesis_basin():
+    """A basin-crossing storm's cone touches two atcf_ids equally;
+    the earliest valid_time (genesis basin) wins the tie."""
+    gdacs = pd.DataFrame([
+        _gdacs_forecast(10, "2016-11-23 00:00", 12.0, -82.0),  # Atlantic
+        _gdacs_forecast(10, "2016-11-25 00:00", 11.0, -88.0),  # E Pacific
+    ])
+    nhc = pd.DataFrame([
+        _nhc_row("AL162016", "2016-11-23 00:00", 12.0, -82.0),
+        _nhc_row("EP222016", "2016-11-25 00:00", 11.0, -88.0),
+    ])
+    assert match_to_atcf(gdacs, nhc) == "AL162016"
+
+
+def test_falls_back_to_genesis_when_cone_has_no_overlap():
+    """Forecast points exist but none land on an NHC row (e.g. our
+    NHC horizon is shorter). The genesis observed advisory still
+    resolves it."""
+    gdacs = pd.DataFrame([
+        _gdacs_row(1, "2024-10-09 21:00", 18.0, -77.0),       # genesis
+        _gdacs_forecast(1, "2024-10-20 00:00", 40.0, -50.0),  # no NHC row
+    ])
+    nhc = pd.DataFrame([
+        _nhc_row("AL142024", "2024-10-09 21:00", 18.0, -77.0),
+    ])
+    assert match_to_atcf(gdacs, nhc) == "AL142024"
