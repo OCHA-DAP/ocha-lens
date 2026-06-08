@@ -308,10 +308,23 @@ def get_events(
     # inside the window) would silently drop storms that started just before
     # the window — e.g. KIRK-24 (from_date 2024-09-29) would be filtered out
     # of a 2024-10-01..15 query despite being active for most of the window.
+    #
+    # Compare at DATE granularity: the window bounds are dates (parse to
+    # midnight), but the event endpoints carry a time-of-day. Without
+    # normalizing, a storm forming at e.g. 15:00 on the window's end day has
+    # from_date > to_date (00:00) and is wrongly dropped (the mirror case
+    # bites the window's start day). Flooring the event endpoints to their
+    # date makes the test "active on any day in [from_date, to_date]".
     if from_date is not None:
-        df = df[pd.to_datetime(df["to_date"]) >= pd.to_datetime(from_date)]
+        df = df[
+            pd.to_datetime(df["to_date"]).dt.normalize()
+            >= pd.to_datetime(from_date)
+        ]
     if to_date is not None:
-        df = df[pd.to_datetime(df["from_date"]) <= pd.to_datetime(to_date)]
+        df = df[
+            pd.to_datetime(df["from_date"]).dt.normalize()
+            <= pd.to_datetime(to_date)
+        ]
 
     return EVENT_SCHEMA.validate(df.reset_index(drop=True))
 

@@ -335,6 +335,31 @@ def test_get_events_date_filter_uses_overlap_not_containment(monkeypatch):
     assert set(df["event_id"]) == {1, 2, 3}
 
 
+def test_get_events_date_filter_compares_by_date_not_time(monkeypatch):
+    """Window bounds are dates (parse to midnight); event endpoints carry a
+    time-of-day, so the overlap test must compare at DATE granularity. A
+    storm forming at 15:00 on the window's end day (from_date
+    2026-06-08T15:00 for a ..2026-06-08 query) must be kept — without
+    normalizing it has from_date > to_date(00:00) and is wrongly dropped
+    (the CRISTINA-26 regression). A storm forming the day *after* the
+    window must still be excluded, so the bound stays real."""
+    features = [
+        # Forms 15:00 on the window's END day → keep.
+        _event_feature(
+            event_id=10, from_date="2026-06-08T15:00:00",
+            to_date="2026-06-08T18:00:00",
+        ),
+        # Forms the day AFTER the window → exclude.
+        _event_feature(
+            event_id=12, from_date="2026-06-09T03:00:00",
+            to_date="2026-06-09T09:00:00",
+        ),
+    ]
+    _install_fake_get_json(monkeypatch, lambda u, p: _page(features))
+    df = adam.get_events(from_date="2026-06-06", to_date="2026-06-08")
+    assert set(df["event_id"]) == {10}
+
+
 def test_get_events_empty_returns_typed_empty_df(monkeypatch):
     """Empty result must still validate against EVENT_SCHEMA. Callers can
     iterate rows or check len() without special-casing."""
