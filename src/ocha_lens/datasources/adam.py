@@ -28,7 +28,6 @@ import pandera.pandas as pa
 import pycountry
 import requests
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -51,6 +50,17 @@ _KMH_COL_TO_KT = {
     "POP_60_KMH": 34,
     "POP_90_KMH": 50,
     "POP_120_KMH": 64,
+}
+
+
+# WFP renamed the admin columns around the 2026 season: historical CSVs use
+# ADM0_NAME/ADM1_NAME/ADM2_NAME, newer ones use LEVEL_0/LEVEL_1/LEVEL_2 (same
+# meaning: country / state / district). We alias the new names onto the
+# canonical ones so both schemas parse identically — see _csv_to_long.
+_ADMIN_COL_ALIASES = {
+    "LEVEL_0": "ADM0_NAME",
+    "LEVEL_1": "ADM1_NAME",
+    "LEVEL_2": "ADM2_NAME",
 }
 
 
@@ -345,6 +355,29 @@ def make_cumulative(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
+def _drop_total_rows(csv_df: pd.DataFrame) -> pd.DataFrame:
+    """Drop pre-aggregated subtotal rows the newer (2026+) CSVs embed.
+
+    Those CSVs append rows marked ``<name> - TOT`` (a state subtotal and a
+    national total) alongside the ADM2 leaf rows, with the finer admin
+    levels left blank. Historical CSVs had no such rows — we always
+    aggregated ADM2 leaves up to ADM1/ADM0 ourselves (see emit() below), so
+    leaving these in would double-count them into our own totals. Expects
+    columns already normalized to ADM0_NAME/ADM1_NAME/ADM2_NAME.
+    """
+    admin_cols = [
+        c for c in ("ADM0_NAME", "ADM1_NAME", "ADM2_NAME") if c in csv_df.columns
+    ]
+    if not admin_cols:
+        return csv_df
+    is_total = pd.Series(False, index=csv_df.index)
+    for c in admin_cols:
+        is_total |= (
+            csv_df[c].astype(str).str.strip().str.upper().str.endswith("- TOT")
+        )
+    return csv_df[~is_total]
+
+
 def _csv_to_long(csv_df: pd.DataFrame, event_id: int) -> pd.DataFrame:
     """ADM2-granularity CSV → long-form rows for all three admin levels.
 
@@ -358,6 +391,18 @@ def _csv_to_long(csv_df: pd.DataFrame, event_id: int) -> pd.DataFrame:
     # publishes a CSV with whitespace or lowercase headers.
     csv_df = csv_df.copy()
     csv_df.columns = csv_df.columns.str.strip().str.upper()
+    # Alias the newer LEVEL_n headers onto the canonical ADMn_NAME ones, but
+    # only when the canonical column isn't already present — a CSV carrying
+    # both would otherwise end up with duplicate ADM0_NAME columns and break
+    # the r["ADM0_NAME"] lookups below.
+    rename = {
+        src: dst
+        for src, dst in _ADMIN_COL_ALIASES.items()
+        if src in csv_df.columns and dst not in csv_df.columns
+    }
+    if rename:
+        csv_df = csv_df.rename(columns=rename)
+    csv_df = _drop_total_rows(csv_df)
     csv_df = make_cumulative(csv_df)
 
     present_kmh = [c for c in _KMH_COL_TO_KT if c in csv_df.columns]

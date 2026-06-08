@@ -21,8 +21,6 @@ HTTP is mocked at two seams:
   - adam._session.get : the per-event CSV downloads
 """
 
-import base64
-import json
 from typing import Optional
 
 import pandas as pd
@@ -30,7 +28,6 @@ import pytest
 import requests
 
 from ocha_lens.datasources import adam
-
 
 # ---------------------------------------------------------------------------
 # Mocking helpers
@@ -375,6 +372,83 @@ def test_get_exposure_no_pop_columns_raises(monkeypatch):
     _install_fake_csv_get(monkeypatch, csv)
     with pytest.raises(adam.NoExposureCSVError, match="missing ADM0_NAME or all"):
         adam.get_exposure(event_id=1, population_csv_url="https://example/csv")
+
+
+def test_get_exposure_accepts_level_column_schema(monkeypatch):
+    """WFP renamed the admin columns around the 2026 season
+    (ADM0/1/2_NAME -> LEVEL_0/1/2). The same exposure data under either
+    header must yield an identical canonical long form, so the rename is
+    invisible to every downstream consumer."""
+    rows = [
+        ("Mexico", "Guerrero", "Acapulco", 100, 60, 20),
+        ("Mexico", "Guerrero", "Acatepec", 200, 80, 30),
+        ("Mexico", "Oaxaca", "Pinotepa", 50, 10, 0),
+    ]
+    adm_csv = _make_csv(rows)
+    level_header = (
+        "level_0,level_1,level_2,POP_60_KMH,POP_90_KMH,POP_120_KMH\n"
+    )
+    level_csv = level_header + "\n".join(
+        ",".join(str(x) for x in r) for r in rows
+    )
+
+    _install_fake_csv_get(monkeypatch, adm_csv)
+    out_adm = adam.get_exposure(
+        event_id=1, population_csv_url="https://example/csv"
+    )
+    _install_fake_csv_get(monkeypatch, level_csv)
+    out_level = adam.get_exposure(
+        event_id=1, population_csv_url="https://example/csv"
+    )
+
+    pd.testing.assert_frame_equal(
+        out_adm.reset_index(drop=True), out_level.reset_index(drop=True)
+    )
+
+
+def test_get_exposure_level_schema_single_band(monkeypatch):
+    """The real 2026 production shape: LEVEL_n headers with only a single
+    POP_60_KMH band (BORIS-26). It must parse and emit rows at the 34 kt
+    threshold only — no extra bands invented, no adaptor needed
+    downstream."""
+    csv = (
+        "level_0,level_1,level_2,POP_60_KMH\n"
+        "Mexico,Guerrero,Acapulco,863560\n"
+        "Mexico,Guerrero,Acatepec,20490\n"
+    )
+    _install_fake_csv_get(monkeypatch, csv)
+    out = adam.get_exposure(
+        event_id=1001274, population_csv_url="https://example/csv"
+    )
+
+    assert set(out["wind_speed_kt"]) == {34}
+    # 1 adm0 + 1 adm1 + 2 adm2 = 4 groups, each at the single 34 kt band.
+    assert len(out) == 4
+    assert (out["iso3"] == "MEX").all()
+
+
+def test_get_exposure_drops_embedded_total_rows(monkeypatch):
+    """2026 CSVs append pre-aggregated '<name> - TOT' subtotal rows among
+    the leaf rows. They must be dropped, not summed into our own ADM0/ADM1
+    aggregates — otherwise every total double-counts (the bug that loaded
+    2x population for BORIS-26)."""
+    csv = (
+        "level_0,level_1,level_2,POP_60_KMH\n"
+        "Mexico,Guerrero,Acapulco,100\n"
+        "Mexico,Guerrero,Acatepec,200\n"
+        "Mexico,Guerrero  - TOT,,300\n"
+        "Mexico  - TOT,,,300\n"
+    )
+    _install_fake_csv_get(monkeypatch, csv)
+    out = adam.get_exposure(
+        event_id=1, population_csv_url="https://example/csv"
+    )
+
+    # No phantom '- TOT' admin unit survived into the long form.
+    assert not out["admin_name"].str.contains("TOT").any()
+    # ADM0 reflects the two real leaves (100+200), not 600.
+    adm0 = out[out["admin_level"] == 0]
+    assert adm0["pop_exposed"].tolist() == [300]
 
 
 def test_get_exposure_http_403_propagates(monkeypatch):
