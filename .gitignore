@@ -22,6 +22,9 @@ venv/
 ENV/
 .venv
 
+# uv — lockfile not committed for a library (see PR #42)
+uv.lock
+
 # Distribution / packaging
 .Python
 env/
