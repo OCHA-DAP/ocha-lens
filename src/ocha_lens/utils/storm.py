@@ -396,29 +396,30 @@ def calculate_wind_buffers_gdf(
     quad_cols_format: str = "usa_quadrant_radius_{speed}_{quad}",
     valid_time_col: str = "valid_time",
 ):
-    """
-    Calculate wind buffer polygons for given wind speed quadrants.
-    Note that this function interpolates the storm track to a regular
-    30-minute interval before calculating the wind buffers.
+    """Calculate wind buffer polygons for each wind-speed threshold.
+
+    The storm track is interpolated to a regular 30-minute interval
+    before the per-quadrant wind buffers are built. Reprojection goes
+    through a basin-appropriate ``lon_wrap`` CRS so antimeridian-crossing
+    tracks have continuous longitudes before projecting to Mercator.
+
     Parameters
     ----------
-    df: pd.DataFrame
-        DataFrame with storm track data including quadrant radius columns
-    quad_cols_format: str = 'quadrant_radius_{speed}_{quad}'
-        Format string for quadrant radius columns, with placeholders for
-        speed and quad (e.g., 'quadrant_radius_{speed}_{quad}')
-    lon_col: str = 'Longitude'
-        Name of the longitude column in df
-    lat_col: str = 'Latitude'
-        Name of the latitude column in df
-    valid_time_col: str = 'valid_time'
-        Name of the valid time column in df
+    gdf : gpd.GeoDataFrame
+        Storm track points (EPSG:4326) with per-quadrant radius columns
+        and, optionally, a ``basin`` column used to pick the projection.
+    quad_cols_format : str, default ``"usa_quadrant_radius_{speed}_{quad}"``
+        Format string for the quadrant radius column names, with
+        ``{speed}`` and ``{quad}`` placeholders (quads: ne/se/sw/nw).
+    valid_time_col : str, default ``"valid_time"``
+        Name of the valid-time column used to order and interpolate the
+        track.
 
     Returns
     -------
     gpd.GeoDataFrame
-        GeoDataFrame with wind buffer polygons for each speed
-
+        One row per wind-speed threshold (``wind_speed_kt`` in
+        {34, 50, 64}) with the merged buffer ``geometry`` (EPSG:4326).
     """
     basin = gdf["basin"].iloc[0] if "basin" in gdf.columns else None
     geo_crs = BASIN_GEO_CRS.get(basin, GEO_CRS_MERIDIAN)
@@ -621,6 +622,7 @@ def match_wsp_to_tracks(
     -------
     GeoDataFrame
         Exploded polygon parts with an added ``atcf_id`` column.
+
         - One row per (storm, polygon part) where the track-line intersects
           or containment fallback fires.
         - If a part is intersected by multiple storms' tracks (overlapping

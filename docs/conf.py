@@ -69,3 +69,7 @@ myst_enable_extensions = [
     "colon_fence",
     "deflist",
 ]
+
+# Auto-generate anchors for headings (h1–h3) so in-page and cross-page
+# section links like `file.md#section-slug` resolve.
+myst_heading_anchors = 3
