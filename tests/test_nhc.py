@@ -2,6 +2,7 @@ from pathlib import Path
 
 from ocha_lens.datasources.nhc import (
     _parse_atcf_adeck,
+    _parse_current_center_radii,
     _parse_forecast_advisory,
     get_storms,
     get_tracks,
@@ -113,3 +114,87 @@ def test_forecast_advisory_wrong_id():
     )
 
     assert len(forecast_points) == 0
+
+
+def test_current_center_radii_parsing():
+    """Current-center (analysis-time) radii are read from the advisory's
+    section preceding the first FORECAST VALID line. CurrentStorms.json omits
+    these, so this is the only realtime source of leadtime=0 wind radii."""
+    with open(FIXTURES_PATH / "TCM_example.txt", "r") as f:
+        advisory_text = f.read()
+
+    radii = _parse_current_center_radii(advisory_text)
+
+    # From the analysis block of the Lee advisory (lines "64/50/34 KT...").
+    assert radii["quadrant_radius_64"] == [40, 35, 30, 40]
+    assert radii["quadrant_radius_50"] == [90, 70, 50, 80]
+    assert radii["quadrant_radius_34"] == [150, 140, 100, 140]
+
+
+def test_current_center_radii_stops_before_forecast():
+    """Radii from the first FORECAST VALID hour must not leak into the
+    current-center result (the 34 KT forecast[0] line is 150/140/100/140 too,
+    so assert the 64 KT value, which differs: analysis 40NE vs forecast 50NE)."""
+    with open(FIXTURES_PATH / "TCM_example.txt", "r") as f:
+        advisory_text = f.read()
+
+    radii = _parse_current_center_radii(advisory_text)
+    # Analysis 64 KT NE radius is 40; the first forecast hour's is 50.
+    assert radii["quadrant_radius_64"][0] == 40
+
+
+def test_current_center_radii_absent():
+    """A system with no 34/50/64 KT analysis lines yields all-None."""
+    text_no_radii = (
+        "NWS NATIONAL HURRICANE CENTER MIAMI FL       EP992026\n"
+        "TROPICAL DEPRESSION CENTER LOCATED NEAR 12.0N 100.0W AT 09/1500Z\n"
+        "MAX SUSTAINED WINDS 25 KT WITH GUSTS TO 35 KT.\n"
+        "FORECAST VALID 10/0000Z 13.0N 101.0W\n"
+        "MAX WIND 30 KT...GUSTS 40 KT.\n"
+    )
+    radii = _parse_current_center_radii(text_no_radii)
+    assert radii == {
+        "quadrant_radius_34": None,
+        "quadrant_radius_50": None,
+        "quadrant_radius_64": None,
+    }
+
+
+def test_observation_backfills_radii_from_advisory(monkeypatch):
+    """End-to-end: the leadtime=0 observation (from CurrentStorms.json, which
+    omits radii) is enriched with the advisory's analysis-time wind radii."""
+    import ocha_lens.datasources.nhc as nhc
+
+    with open(FIXTURES_PATH / "TCM_example.txt", "r") as f:
+        advisory_text = f.read()
+    monkeypatch.setattr(
+        nhc, "_fetch_forecast_advisory", lambda url: advisory_text
+    )
+
+    raw = {
+        "activeStorms": [
+            {
+                "id": "al132023",
+                "name": "Lee",
+                "lastUpdate": "2023-09-10T21:00:00Z",
+                "intensity": "105",
+                "pressure": "954",
+                "latitudeNumeric": 22.1,
+                "longitudeNumeric": -61.7,
+                "forecastAdvisory": {
+                    "url": "http://example/advisory",
+                    "issuance": "2023-09-10T21:00:00Z",
+                },
+            }
+        ]
+    }
+
+    df = nhc._process_nhc_to_df(
+        raw, include_observations=True, include_forecasts=True
+    )
+    obs = df[df.leadtime == 0].iloc[0]
+    # Backfilled from the advisory analysis block, NOT the first forecast hour
+    # (whose 64 KT NE radius is 50, vs the analysis 40).
+    assert obs["quadrant_radius_34"] == [150, 140, 100, 140]
+    assert obs["quadrant_radius_50"] == [90, 70, 50, 80]
+    assert obs["quadrant_radius_64"] == [40, 35, 30, 40]

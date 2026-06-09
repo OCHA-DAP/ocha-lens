@@ -911,6 +911,58 @@ def _parse_forecast_advisory(
     return forecast_points
 
 
+def _parse_current_center_radii(advisory_text: str) -> dict:
+    """Extract the current-center (analysis-time) wind radii from a forecast
+    advisory.
+
+    NHC's ``CurrentStorms.json`` does not carry wind radii for the current
+    observation (see ``_extract_current_observation``), so for realtime data
+    the only source of leadtime=0 radii is the analysis section of the
+    forecast/advisory text — the ``34/50/64 KT...`` lines that appear *before*
+    the first ``FORECAST VALID`` / ``OUTLOOK VALID`` line, e.g.::
+
+        MAX SUSTAINED WINDS 105 KT WITH GUSTS TO 120 KT.
+        64 KT....... 40NE  35SE  30SW  40NW.
+        50 KT....... 90NE  70SE  50SW  80NW.
+        34 KT.......150NE 140SE 100SW 140NW.
+        FORECAST VALID 11/0600Z ...
+
+    Returns a dict with keys ``quadrant_radius_34/50/64``; each value is a
+    ``[NE, SE, SW, NW]`` list (nautical miles), or ``None`` when that threshold
+    is absent (e.g. a system below 34 kt).
+    """
+    import re
+
+    out = {
+        "quadrant_radius_34": None,
+        "quadrant_radius_50": None,
+        "quadrant_radius_64": None,
+    }
+    # <thr> KT <dots/spaces> <NE>NE <SE>SE <SW>SW <NW>NW. Use \D*? (not .*?)
+    # between the threshold and the first radius so the variable run of dots
+    # and spaces is skipped without ever swallowing a digit. This is robust to
+    # the analysis-line spacing ("64 KT....... 40NE") that splits differently
+    # from the forecast-line spacing ("64 KT... 40NE").
+    radii_re = re.compile(
+        r"^(34|50|64)\s*KT\b\D*?(\d+)\s*NE\s+(\d+)\s*SE\s+(\d+)\s*SW\s+(\d+)\s*NW"
+    )
+    for ln in advisory_text.split("\n"):
+        s = ln.strip()
+        # The analysis radii precede the first forecast/outlook block; stop
+        # there so we never pick up a forecast hour's radii.
+        if s.startswith("FORECAST VALID") or s.startswith("OUTLOOK VALID"):
+            break
+        m = radii_re.match(s)
+        if m:
+            out[f"quadrant_radius_{m.group(1)}"] = [
+                int(m.group(2)),
+                int(m.group(3)),
+                int(m.group(4)),
+                int(m.group(5)),
+            ]
+    return out
+
+
 def _fetch_current_storms_json() -> Optional[dict]:
     """
     Fetch current storms JSON from NHC CurrentStorms.json file.
@@ -1047,6 +1099,7 @@ def _process_nhc_to_df(
         logger.debug(f"Processing storm {atcf_id} ({storm_name})")
 
         # Extract current observation
+        obs = None
         if include_observations:
             try:
                 obs = _extract_current_observation(storm)
@@ -1104,6 +1157,23 @@ def _process_nhc_to_df(
                         logger.debug(
                             f"Added {len(forecast_points)} forecast points for {atcf_id}"
                         )
+
+                        # Backfill the leadtime=0 observation's wind radii
+                        # from the advisory's analysis section. CurrentStorms.
+                        # json omits these, so without this the observation
+                        # row has null radii and never yields an observed
+                        # wind buffer downstream.
+                        if obs is not None:
+                            current_radii = _parse_current_center_radii(
+                                advisory_text
+                            )
+                            for col, val in current_radii.items():
+                                if val is not None:
+                                    obs[col] = val
+                            logger.debug(
+                                f"Backfilled current-center radii for {atcf_id}: "
+                                f"{current_radii}"
+                            )
                     else:
                         logger.warning(
                             f"Failed to fetch advisory text for {atcf_id} from {advisory_url}"
