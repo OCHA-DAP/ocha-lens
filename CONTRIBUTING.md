@@ -47,7 +47,6 @@ the file without committing by executing:
 
 ## Documentation
 
-Documentation
 Documentation is built using Sphinx with MyST for Markdown support. Build the docs locally:
 
 ```bash
@@ -63,3 +62,35 @@ You can also use `sphinx-autobuild` to automatically rebuild the docs on changes
 pip install sphinx-autobuild
 sphinx-autobuild docs docs/_build/html
 ```
+
+## Releasing
+
+The package version is derived from the git tag via `hatch-vcs` — there is
+**no version to bump in `pyproject.toml`**. Creating a GitHub Release is the
+release: the `publish.yaml` workflow fires on `release: published` and
+publishes the build to PyPI. PyPI will not let you reuse a version, so the
+number must be right the first time.
+
+Checklist:
+
+1. **Make sure `main` is green** — CI passing, all intended PRs merged.
+2. **Update the docs for any new/changed public API.** The Sphinx API
+   reference (`docs/api.md`) is manually curated — new functions only appear
+   once they're listed with an `autofunction` directive. For a new
+   datasource, also add a `docs/datasets/<name>.md` page and wire it into
+   `docs/datasets/index.md`. Build locally and confirm it's clean:
+
+   ```bash
+   sphinx-build -b html docs docs/_build/html
+   ```
+
+3. **Pick the version** (semver; the tag *is* the version). On the `0.x`
+   line: bump the minor for new features (e.g. a new datasource or public
+   function), the patch for fixes only. Use a bare tag like `0.5.0` — no `v`
+   prefix.
+4. **Draft release notes** summarizing user-facing changes, grouped by area,
+   referencing the merged PRs.
+5. **Create the GitHub Release** targeting `main` with that tag. This triggers
+   the PyPI publish.
+6. **Verify the publish** — confirm the `publish.yaml` run succeeded and the
+   new version is live on [PyPI](https://pypi.org/project/ocha-lens/).
