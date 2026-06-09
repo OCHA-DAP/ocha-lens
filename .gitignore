@@ -19,11 +19,15 @@ celerybeat-schedule
 
 # virtualenv
 venv/
+.venv/
 ENV/
 .venv
 
 # uv — lockfile not committed for a library (see PR #42)
 uv.lock
+
+# Local scratch notes (per-developer, not for the repo)
+.scrap/
 
 # Distribution / packaging
 .Python
