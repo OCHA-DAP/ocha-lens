@@ -46,7 +46,7 @@ _BUFFER_KEYS = ("buffer39", "buffer74")
 # dependencies where GDACS uses an X-prefixed internal code. Add new
 # entries here as new GDACS proprietary codes surface in real data.
 GDACS_PROPRIETARY_TO_ISO3 = {
-    "XJE": "JEY",   # Jersey (British Crown Dependency)
+    "XJE": "JEY",  # Jersey (British Crown Dependency)
     # "XGG": "GGY",  # Guernsey — add if encountered
     # "XIM": "IMN",  # Isle of Man — add if encountered
 }
@@ -62,6 +62,7 @@ def to_iso3(gdacs_country_code: str) -> str:
     return GDACS_PROPRIETARY_TO_ISO3.get(
         gdacs_country_code, gdacs_country_code
     )
+
 
 AlertLevel = Literal["Green", "Orange", "Red"]
 
@@ -460,7 +461,8 @@ def get_timeline(
     # one format from the first row and chokes on the other; format="mixed"
     # parses each value independently.
     df["advisory_datetime"] = pd.to_datetime(
-        df["advisory_datetime"], format="mixed",
+        df["advisory_datetime"],
+        format="mixed",
     )
     df["advisory_number"] = df["advisory_number"].replace("", None)
     df["advisory_number"] = pd.to_numeric(df["advisory_number"])
@@ -518,9 +520,7 @@ def get_exposure_adm0(
         DataFrame with columns ``iso3``, ``country``, ``pop_affected``,
         ``distance_km``.
     """
-    return _exposure_per_buffer(
-        eventid, episodeid, _parse_adm0, detail=detail
-    )
+    return _exposure_per_buffer(eventid, episodeid, _parse_adm0, detail=detail)
 
 
 def get_exposure_adm1(
@@ -550,9 +550,7 @@ def get_exposure_adm1(
         ``admin_type``, ``pop_admin``, ``pop_affected``,
         ``distance_km``.
     """
-    return _exposure_per_buffer(
-        eventid, episodeid, _parse_adm1, detail=detail
-    )
+    return _exposure_per_buffer(eventid, episodeid, _parse_adm1, detail=detail)
 
 
 def _is_actual(actual: pd.Series) -> pd.Series:
@@ -623,8 +621,8 @@ def _match_by_forecast_cone(
     captures — it never needs the genesis cycle, only the cone of
     whatever advisory we did capture.
 
-    Ties (a basin-crossing storm whose cone touches two ``atcf_id``s)
-    go to the earliest ``valid_time``, i.e. the genesis basin.
+    Ties (a basin-crossing storm whose cone touches two ``atcf_id``
+    values) go to the earliest ``valid_time``, i.e. the genesis basin.
     """
     votes = [
         atcf
@@ -694,7 +692,7 @@ def match_to_atcf(
     That asymmetry drives a two-strategy match:
 
     1. :func:`_match_by_forecast_cone` (primary) — vote the GDACS
-       forecast points onto NHC ``atcf_id``s by exact valid_time.
+       forecast points onto NHC ``atcf_id`` values by exact valid_time.
        Robust (many points), product-agnostic, and self-healing for
        storms whose first advisories we never captured.
     2. :func:`_match_by_genesis` (fallback) — single-point match on
@@ -742,9 +740,7 @@ def _exposure_per_buffer(
         # The two args describe different snapshots (event-level vs.
         # a specific episode). Accepting both silently would mean
         # the caller's `detail` is wasted; force them to pick one.
-        raise ValueError(
-            "pass either `episodeid` or `detail`, not both"
-        )
+        raise ValueError("pass either `episodeid` or `detail`, not both")
     if episodeid is not None:
         detail = get_episode_detail(eventid, episodeid)
     elif detail is None:
@@ -787,7 +783,9 @@ def _parse_adm0(data: Dict[str, Any]) -> pd.DataFrame:
                 {
                     "iso3": scalars["GMI_CNTRY"],
                     "country": scalars.get("CNTRY_NAME"),
-                    "pop_affected": _to_nullable_int(scalars.get("POP_AFFECTED")),
+                    "pop_affected": _to_nullable_int(
+                        scalars.get("POP_AFFECTED")
+                    ),
                     "distance_km": _to_nullable_round(scalars.get("distance")),
                 }
             )
@@ -818,7 +816,9 @@ def _parse_adm1(data: Dict[str, Any]) -> pd.DataFrame:
                     "admin_name": scalars.get("ADMIN_NAME"),
                     "admin_type": scalars.get("TYPE_ENG"),
                     "pop_admin": _to_nullable_int(scalars.get("POP_ADMIN")),
-                    "pop_affected": _to_nullable_int(scalars.get("POP_AFFECTED")),
+                    "pop_affected": _to_nullable_int(
+                        scalars.get("POP_AFFECTED")
+                    ),
                     "distance_km": _to_nullable_round(scalars.get("distance")),
                 }
             )

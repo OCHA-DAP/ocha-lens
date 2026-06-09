@@ -8,4 +8,6 @@ ocha-lens provides utilities for working with various climate-related datasets:
 ibtracs
 ecmwf_cyclones
 nhc
+gdacs
+adam
 ```
