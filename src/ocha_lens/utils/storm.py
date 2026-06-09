@@ -1,3 +1,4 @@
+import warnings
 from typing import Tuple
 
 import antimeridian
@@ -6,11 +7,15 @@ import numpy as np
 import pandas as pd
 from scipy.interpolate import PchipInterpolator
 from shapely import Polygon
-from shapely.geometry import MultiPolygon, Point
+from shapely.geometry import LineString, MultiPolygon, Point
 from shapely.validation import make_valid
 
 QUADS = ["ne", "se", "sw", "nw"]
 NM_TO_M = 1.852 * 1000
+# The three standard NHC wind thresholds in knots (tropical-storm /
+# storm / hurricane force). Single source of truth, imported by the
+# buffer / WSP / exposure schemas in nhc.py and ibtracs.py so the list
+# can't drift out of sync across modules.
 BUFFER_SPEEDS = [34, 50, 64]
 
 GEO_CRS_MERIDIAN = "+proj=longlat +datum=WGS84 +lon_wrap=0"
@@ -146,7 +151,11 @@ def interpolate_track(
 
     n = len(work)
 
-    # --- ensure output schema matches input
+    # Only numeric columns are interpolated and carried through. Non-numeric
+    # identifier columns (atcf_id, basin, name, issued_time) and nullable
+    # Int64 columns are NOT preserved — callers that need them on the output
+    # must re-attach them after interpolating. (calculate_wind_buffers_gdf
+    # reads `basin` *before* this call, so it is unaffected.)
     numeric_cols = work.select_dtypes(include=[np.number]).columns.difference(
         ["lat", "lon"]
     )
@@ -356,23 +365,29 @@ def build_merged_wind_buffer(
         Merged polygon of wind buffers, or None if all radius values are NaN
 
     """
-    ne_col, se_col, sw_col, nw_col = quad_cols
+    cols = list(quad_cols)
     polys = []
-    gdf[[ne_col, se_col, sw_col, nw_col]] = (
-        gdf[[ne_col, se_col, sw_col, nw_col]].fillna(0) * NM_TO_M
-    )
     for _, row in gdf.iterrows():
-        if row[[ne_col, se_col, sw_col, nw_col]].isna().all():
-            return None
-
+        radii = row[cols]
+        # A point with no radii at all for this speed contributes no
+        # buffer — skip it rather than emit a degenerate zero-radius
+        # disk. (Check the raw row *before* filling, so the all-missing
+        # case is actually detectable.)
+        if radii.isna().all():
+            continue
+        # Partial radii: a missing quadrant means zero reach there.
+        radii = radii.fillna(0) * NM_TO_M
         poly = make_quadrant_disk(
             (row.geometry.x, row.geometry.y),
-            row[ne_col],
-            row[se_col],
-            row[sw_col],
-            row[nw_col],
+            radii[quad_cols[0]],
+            radii[quad_cols[1]],
+            radii[quad_cols[2]],
+            radii[quad_cols[3]],
         )
         polys.append(poly)
+    # No point had radii for this speed → no buffer at all.
+    if not polys:
+        return None
     return gpd.GeoSeries(polys).union_all()
 
 
@@ -424,7 +439,7 @@ def calculate_wind_buffers_gdf(
             quad_cols_format.format(speed=speed, quad=x) for x in QUADS
         )
         geoms.append(build_merged_wind_buffer(gdf_interp, speed_quad_cols))
-        dicts.append({"speed": speed})
+        dicts.append({"wind_speed_kt": speed})
     result = gpd.GeoDataFrame(dicts, geometry=geoms, crs=proj_crs).to_crs(
         "EPSG:4326"
     )
@@ -487,6 +502,18 @@ def _filled_geom(geom):
 _WSP_TRACK_OFFSET_HOURS = 3
 
 
+def _to_naive_utc(s: pd.Series) -> pd.Series:
+    """Coerce a datetime Series to tz-naive UTC.
+
+    Localizes tz-naive input as UTC and converts tz-aware input to UTC,
+    then drops the tz. Lets the exact-timestamp WSP↔track lookups below
+    compare cleanly regardless of whether each side arrived tz-aware
+    (e.g. straight from the DB) or tz-naive (e.g. via the nhc loader,
+    which now normalizes to naive UTC).
+    """
+    return pd.to_datetime(s, utc=True).dt.tz_localize(None)
+
+
 def _atcf_ids_intersecting_polygon(
     geom,
     tracks_by_storm: dict,
@@ -515,8 +542,6 @@ def _build_tracks_by_storm(tracks_at_time: gpd.GeoDataFrame) -> dict:
 
     Multiple track points are sorted by valid_time before being joined.
     """
-    from shapely.geometry import LineString
-
     out: dict = {}
     for atcf_id, sub in tracks_at_time.groupby("atcf_id"):
         if len(sub) == 1:
@@ -602,10 +627,8 @@ def match_wsp_to_tracks(
           cones), a row is emitted for each matching storm.
         - Parts with no match still have ``atcf_id=None``.
     """
-    import warnings as _warnings
-
-    with _warnings.catch_warnings():
-        _warnings.filterwarnings(
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
             "ignore",
             message=".*GeoSeries.notna.*",
             category=UserWarning,
@@ -615,6 +638,14 @@ def match_wsp_to_tracks(
     if gdf_wsp.empty:
         gdf_wsp["atcf_id"] = pd.Series(dtype="object")
         return gdf_wsp
+
+    # Normalize issued_time on both sides to naive UTC so the exact-match
+    # lookups below don't silently miss when one source is tz-aware (DB)
+    # and the other tz-naive (loader). gdf_tracks is copied so we don't
+    # mutate the caller's frame.
+    gdf_wsp["issued_time"] = _to_naive_utc(gdf_wsp["issued_time"])
+    gdf_tracks = gdf_tracks.copy()
+    gdf_tracks["issued_time"] = _to_naive_utc(gdf_tracks["issued_time"])
 
     # Explode every WSP MultiPolygon up front so each row is a single part,
     # then sort by percentage ascending so big outer bands are matched
@@ -639,8 +670,16 @@ def match_wsp_to_tracks(
     # (filled_geom, atcf_id, area). Seeded from extra_containers.
     matched_by_key: dict[tuple, list[tuple]] = {}
     if extra_containers is not None and not extra_containers.empty:
+        extra_containers = extra_containers.copy()
+        extra_containers["issued_time"] = _to_naive_utc(
+            extra_containers["issued_time"]
+        )
         for _, c in extra_containers.iterrows():
-            if c.get("atcf_id") is None:
+            # SQL NULL reads back as NaN/pd.NA, not Python None, so the
+            # old `is None` check let null-atcf containers through — they
+            # would then be handed to inner bands via containment and
+            # emit atcf_id=NaN rows that violate the not-null schema.
+            if pd.isna(c.get("atcf_id")):
                 continue
             g = c.geometry
             if g is None or g.is_empty:

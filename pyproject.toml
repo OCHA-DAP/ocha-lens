@@ -39,7 +39,8 @@ dependencies = [
     "requests>=2.31.0",
     "lat-lon-parser>=1.2.0",
     "scipy>=1.12.0",
-    "antimeridian>=0.4.0"
+    "antimeridian>=0.4.0",
+    "tqdm>=4.0"
 ]
 dynamic = ["version"]
 

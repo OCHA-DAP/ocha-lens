@@ -13,6 +13,7 @@ import pandera.pandas as pa
 import xarray as xr
 
 from ocha_lens.utils.storm import (
+    BUFFER_SPEEDS,
     _create_storm_id,
     _normalize_longitude,
     _to_gdf,
@@ -115,7 +116,7 @@ TRACK_SCHEMA = pa.DataFrameSchema(
 # consumers to validate the data shape they read or write.
 # ---------------------------------------------------------------------------
 
-_WIND_SPEED_KT = pa.Check.isin([34, 50, 64])
+_WIND_SPEED_KT = pa.Check.isin(BUFFER_SPEEDS)
 
 # Mirrors storms.ibtracs_wind_buffers
 WIND_BUFFERS_SCHEMA = pa.DataFrameSchema(
