@@ -13,6 +13,7 @@ import pandera.pandas as pa
 import xarray as xr
 
 from ocha_lens.utils.storm import (
+    BUFFER_SPEEDS,
     _create_storm_id,
     _normalize_longitude,
     _to_gdf,
@@ -103,6 +104,47 @@ TRACK_SCHEMA = pa.DataFrameSchema(
             error="All coordinates must be within valid lat/lon bounds",
         ),
     ],
+)
+
+
+# ---------------------------------------------------------------------------
+# Downstream IBTrACS table schemas
+#
+# Mirror the tables defined in ds-storms-pipeline (src/schemas/sql/) for the
+# per-storm wind buffer + admin-level exposure products. No lens loader
+# returns these today — they're shared schemas for downstream pipelines and
+# consumers to validate the data shape they read or write.
+# ---------------------------------------------------------------------------
+
+_WIND_SPEED_KT = pa.Check.isin(BUFFER_SPEEDS)
+
+# Mirrors storms.ibtracs_wind_buffers
+WIND_BUFFERS_SCHEMA = pa.DataFrameSchema(
+    {
+        "sid": pa.Column(str, nullable=False),
+        "wind_speed_kt": pa.Column(int, _WIND_SPEED_KT, nullable=False),
+        "geometry": pa.Column(gpd.array.GeometryDtype, nullable=True),
+    },
+    strict=True,
+    coerce=True,
+    unique=["sid", "wind_speed_kt"],
+    report_duplicates="all",
+)
+
+# Mirrors storms.ibtracs_wind_exposure
+WIND_EXPOSURE_SCHEMA = pa.DataFrameSchema(
+    {
+        "sid": pa.Column(str, nullable=False),
+        "wind_speed_kt": pa.Column(int, _WIND_SPEED_KT, nullable=False),
+        "admin_level": pa.Column(int, pa.Check.ge(0), nullable=False),
+        "iso3": pa.Column(str, nullable=False),
+        "pcode": pa.Column(str, nullable=False),
+        "pop_exposed": pa.Column(int, pa.Check.ge(0), nullable=False),
+    },
+    strict=True,
+    coerce=True,
+    unique=["sid", "wind_speed_kt", "admin_level", "pcode"],
+    report_duplicates="all",
 )
 
 

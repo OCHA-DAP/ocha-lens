@@ -18,8 +18,10 @@ from bs4 import BeautifulSoup
 from dateutil import parser as dateparser
 from dateutil.relativedelta import relativedelta
 from lat_lon_parser import parse as parse_lat_lon
+from tqdm import tqdm
 
 from ocha_lens.utils.storm import (
+    BUFFER_SPEEDS,
     _create_storm_id,
     _to_gdf,
     check_coordinate_bounds,
@@ -983,6 +985,20 @@ def _extract_current_observation(storm_dict: dict) -> dict:
     }
 
 
+def _to_naive_utc(s: pd.Series) -> pd.Series:
+    """Coerce a datetime Series to tz-naive UTC.
+
+    Localizes tz-naive input as UTC and converts tz-aware input to UTC,
+    then drops the tz, yielding plain datetime64[ns] — matches the storms
+    DB schema (TIMESTAMP WITHOUT TIME ZONE) and avoids tz-aware/naive
+    comparison mismatches downstream. Observation rows (from
+    pd.Timestamp(...Z)) and forecast rows (from dateparser + relativedelta)
+    can otherwise end up with mismatched tz state under some
+    pandas/dateutil versions, yielding object dtype that breaks .dt.
+    """
+    return pd.to_datetime(s, utc=True).dt.tz_localize(None)
+
+
 def _process_nhc_to_df(
     raw_data: dict,
     include_observations: bool = True,
@@ -1105,17 +1121,10 @@ def _process_nhc_to_df(
 
     logger.info(f"Extracted {len(all_records)} total records")
     df = pd.DataFrame(all_records)
-    # Coerce datetime columns to naive UTC. Observation rows (from
-    # pd.Timestamp(...Z)) and forecast rows (from dateparser +
-    # relativedelta) can end up with mismatched tz state under some
-    # pandas/dateutil versions, yielding object dtype and breaking
-    # downstream .dt accessors. Normalize to UTC and then drop the tz so
-    # the column is plain datetime64[ns] — matches the storms DB schema
-    # (TIMESTAMP without time zone) and avoids tz-aware/naive comparison
-    # mismatches in downstream filters.
+    # Normalize datetime columns to naive UTC (see _to_naive_utc).
     for col in ("valid_time", "issued_time"):
         if col in df.columns:
-            df[col] = pd.to_datetime(df[col], utc=True).dt.tz_localize(None)
+            df[col] = _to_naive_utc(df[col])
     # Coerce numeric columns. Forecast points set pd.NA for fields not in
     # the advisory text (e.g. pressure); mixing pd.NA with floats yields
     # object dtype, which pandera can't coerce to float64. pd.to_numeric
@@ -1575,14 +1584,9 @@ def get_storms(df: pd.DataFrame) -> pd.DataFrame:
 
     df_ = df.copy()
 
-    # Calculate season from valid_time (coerce via tz-aware UTC and then
-    # drop the tz, in case the column came in as object dtype from mixed
-    # tz-aware / tz-naive rows)
-    df_["season"] = (
-        pd.to_datetime(df_["valid_time"], utc=True)
-        .dt.tz_localize(None)
-        .dt.year
-    )
+    # Calculate season from valid_time (normalize first, in case the column
+    # came in as object dtype from mixed tz-aware / tz-naive rows).
+    df_["season"] = _to_naive_utc(df_["valid_time"]).dt.year
 
     # Group by atcf_id to get one row per storm
     df_storms = (
@@ -1701,7 +1705,7 @@ WSP_POLYGON_SCHEMA = pa.DataFrameSchema(
         "issued_time": pa.Column(pd.Timestamp, nullable=False),
         "wind_threshold_kt": pa.Column(
             int,
-            pa.Check.isin([34, 50, 64]),
+            pa.Check.isin(BUFFER_SPEEDS),
             nullable=False,
         ),
         "percentage": pa.Column(
@@ -1713,6 +1717,185 @@ WSP_POLYGON_SCHEMA = pa.DataFrameSchema(
     },
     strict=True,
     coerce=True,
+)
+
+
+# Schema for per-storm matched WSP polygons. Mirrors
+# storms.nhc_wsp_polygon_matched in ds-storms-pipeline: one MultiPolygon row
+# per (issued_time, wind_threshold_kt, percentage, atcf_id), built from the
+# raw NHC WSP output by ``match_wsp_to_tracks`` + a per-key dissolve.
+_WSP_KT = pa.Check.isin(BUFFER_SPEEDS)
+_PCT_BANDS = pa.Check.isin(list(WSP_PERCENTAGE_MAP.values()))
+
+WSP_POLYGON_MATCHED_SCHEMA = pa.DataFrameSchema(
+    {
+        "issued_time": pa.Column(pd.Timestamp, nullable=False),
+        "wind_threshold_kt": pa.Column(int, _WSP_KT, nullable=False),
+        "percentage": pa.Column(int, _PCT_BANDS, nullable=False),
+        "atcf_id": pa.Column(str, nullable=True),
+        "geometry": pa.Column(gpd.array.GeometryDtype, nullable=True),
+    },
+    strict=True,
+    coerce=True,
+    unique=["issued_time", "wind_threshold_kt", "percentage", "atcf_id"],
+    report_duplicates="all",
+)
+
+# Mirrors storms.nhc_wsp_fcastonly_polygon. One MultiPolygon row per
+# (issued_time, wind_threshold_kt, percentage, atcf_id). ``obsv_valid_time``
+# records which observed buffer was used for the cut-out.
+WSP_FCASTONLY_POLYGON_SCHEMA = pa.DataFrameSchema(
+    {
+        "issued_time": pa.Column(pd.Timestamp, nullable=False),
+        "wind_threshold_kt": pa.Column(int, _WSP_KT, nullable=False),
+        "percentage": pa.Column(int, _PCT_BANDS, nullable=False),
+        "atcf_id": pa.Column(str, nullable=True),
+        "obsv_valid_time": pa.Column(pd.Timestamp, nullable=True),
+        "geometry": pa.Column(gpd.array.GeometryDtype, nullable=True),
+    },
+    strict=True,
+    coerce=True,
+    unique=["issued_time", "wind_threshold_kt", "percentage", "atcf_id"],
+    report_duplicates="all",
+)
+
+
+def _wsp_exposure_schema() -> pa.DataFrameSchema:
+    return pa.DataFrameSchema(
+        {
+            "issued_time": pa.Column(pd.Timestamp, nullable=False),
+            "wind_threshold_kt": pa.Column(int, _WSP_KT, nullable=False),
+            "percentage": pa.Column(int, _PCT_BANDS, nullable=False),
+            "atcf_id": pa.Column(str, nullable=True),
+            "admin_level": pa.Column(int, pa.Check.ge(0), nullable=False),
+            "iso3": pa.Column(str, nullable=False),
+            "pcode": pa.Column(str, nullable=False),
+            "pop_exposed": pa.Column(int, pa.Check.ge(0), nullable=False),
+        },
+        strict=True,
+        coerce=True,
+        unique=[
+            "issued_time",
+            "wind_threshold_kt",
+            "percentage",
+            "atcf_id",
+            "admin_level",
+            "pcode",
+        ],
+        report_duplicates="all",
+    )
+
+
+# Mirrors storms.nhc_wsp_exposure (admin-level exposure for the full WSP).
+WSP_EXPOSURE_SCHEMA = _wsp_exposure_schema()
+
+# Mirrors storms.nhc_wsp_fcastonly_exposure (admin-level exposure for the
+# fcastonly WSP — same shape as WSP_EXPOSURE_SCHEMA).
+WSP_FCASTONLY_EXPOSURE_SCHEMA = _wsp_exposure_schema()
+
+
+# ---------------------------------------------------------------------------
+# Downstream NHC track buffer & exposure table schemas
+#
+# These mirror tables defined in ds-storms-pipeline (src/schemas/sql/) for the
+# per-storm wind buffer + admin-level exposure products built from NHC track
+# forecasts. They aren't returned by any lens loader today — they're shared
+# schemas for downstream pipelines and consumers to validate the data shape
+# they read or write.
+# ---------------------------------------------------------------------------
+
+_WIND_SPEED_KT = pa.Check.isin(BUFFER_SPEEDS)
+
+
+def _buffer_schema(key_cols: list[str], time_col: str) -> pa.DataFrameSchema:
+    """Helper: a per-storm wind buffer table (one polygon row per key)."""
+    return pa.DataFrameSchema(
+        {
+            "atcf_id": pa.Column(str, nullable=False),
+            time_col: pa.Column(pd.Timestamp, nullable=False),
+            "wind_speed_kt": pa.Column(int, _WIND_SPEED_KT, nullable=False),
+            "geometry": pa.Column(gpd.array.GeometryDtype, nullable=True),
+        },
+        strict=True,
+        coerce=True,
+        unique=key_cols,
+        report_duplicates="all",
+    )
+
+
+def _track_exposure_schema(
+    key_cols: list[str], time_col: str
+) -> pa.DataFrameSchema:
+    """Helper: a per-storm-track admin-level exposure table."""
+    return pa.DataFrameSchema(
+        {
+            "atcf_id": pa.Column(str, nullable=False),
+            time_col: pa.Column(pd.Timestamp, nullable=False),
+            "wind_speed_kt": pa.Column(int, _WIND_SPEED_KT, nullable=False),
+            "admin_level": pa.Column(int, pa.Check.ge(0), nullable=False),
+            "iso3": pa.Column(str, nullable=False),
+            "pcode": pa.Column(str, nullable=False),
+            "pop_exposed": pa.Column(int, pa.Check.ge(0), nullable=False),
+        },
+        strict=True,
+        coerce=True,
+        unique=key_cols,
+        report_duplicates="all",
+    )
+
+
+# Mirrors storms.nhc_tracks_fcast_buffers
+TRACKS_FCAST_BUFFERS_SCHEMA = _buffer_schema(
+    key_cols=["atcf_id", "issued_time", "wind_speed_kt"],
+    time_col="issued_time",
+)
+
+# Mirrors storms.nhc_tracks_obsv_buffers
+TRACKS_OBSV_BUFFERS_SCHEMA = _buffer_schema(
+    key_cols=["atcf_id", "valid_time", "wind_speed_kt"],
+    time_col="valid_time",
+)
+
+# Mirrors storms.nhc_tracks_fcastonly_buffers
+TRACKS_FCASTONLY_BUFFERS_SCHEMA = _buffer_schema(
+    key_cols=["atcf_id", "issued_time", "wind_speed_kt"],
+    time_col="issued_time",
+)
+
+# Mirrors storms.nhc_tracks_fcast_exposure
+TRACKS_FCAST_EXPOSURE_SCHEMA = _track_exposure_schema(
+    key_cols=[
+        "atcf_id",
+        "issued_time",
+        "wind_speed_kt",
+        "admin_level",
+        "pcode",
+    ],
+    time_col="issued_time",
+)
+
+# Mirrors storms.nhc_tracks_obsv_exposure
+TRACKS_OBSV_EXPOSURE_SCHEMA = _track_exposure_schema(
+    key_cols=[
+        "atcf_id",
+        "valid_time",
+        "wind_speed_kt",
+        "admin_level",
+        "pcode",
+    ],
+    time_col="valid_time",
+)
+
+# Mirrors storms.nhc_tracks_fcastonly_exposure
+TRACKS_FCASTONLY_EXPOSURE_SCHEMA = _track_exposure_schema(
+    key_cols=[
+        "atcf_id",
+        "issued_time",
+        "wind_speed_kt",
+        "admin_level",
+        "pcode",
+    ],
+    time_col="issued_time",
 )
 
 
@@ -1840,7 +2023,7 @@ def _load_nhc_wsp_archive(
         cache_path.mkdir(parents=True, exist_ok=True)
 
     all_gdfs = []
-    for ts in issuances:
+    for ts in tqdm(issuances, unit="issuance", leave=False):
         ts_str = ts.strftime("%Y%m%d%H")
         cache_file = cache_path / f"{ts_str}_wsp_120hr5km.zip"
 
