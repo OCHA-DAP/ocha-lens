@@ -930,6 +930,15 @@ def _parse_current_center_radii(advisory_text: str) -> dict:
     Returns a dict with keys ``quadrant_radius_34/50/64``; each value is a
     ``[NE, SE, SW, NW]`` list (nautical miles), or ``None`` when that threshold
     is absent (e.g. a system below 34 kt).
+
+    An all-zero line (``0NE 0SE 0SW 0NW``) is deliberately kept as
+    ``[0, 0, 0, 0]`` rather than collapsed to ``None``: the realtime
+    observation radii feed track interpolation downstream, where a zero is a
+    usable numeric anchor (it interpolates into a smooth ramp toward the first
+    forecast hour) but ``None`` would become ``NaN`` and contaminate the
+    interpolated buffers. This matches ``_parse_forecast_advisory`` and is the
+    intentional divergence from the ATCF path, which collapses all-zero to
+    ``None``.
     """
     import re
 
@@ -946,20 +955,31 @@ def _parse_current_center_radii(advisory_text: str) -> dict:
     radii_re = re.compile(
         r"^(34|50|64)\s*KT\b\D*?(\d+)\s*NE\s+(\d+)\s*SE\s+(\d+)\s*SW\s+(\d+)\s*NW"
     )
+    # The analysis radii are the FIRST contiguous block of `KT` lines in the
+    # advisory; forecast hours carry their own `34/50/64 KT` lines later. We
+    # capture that first block and stop as soon as it ends, so a later forecast
+    # hour can never overwrite the analysis values (last-match-wins otherwise).
+    # The explicit FORECAST/OUTLOOK VALID check is the primary boundary; the
+    # "stop once the KT block ends" rule is the backstop if NHC ever rewords
+    # those headers.
+    seen_radii = False
     for ln in advisory_text.split("\n"):
         s = ln.strip()
-        # The analysis radii precede the first forecast/outlook block; stop
-        # there so we never pick up a forecast hour's radii.
         if s.startswith("FORECAST VALID") or s.startswith("OUTLOOK VALID"):
             break
         m = radii_re.match(s)
         if m:
+            seen_radii = True
             out[f"quadrant_radius_{m.group(1)}"] = [
                 int(m.group(2)),
                 int(m.group(3)),
                 int(m.group(4)),
                 int(m.group(5)),
             ]
+        elif seen_radii and s:
+            # Passed the end of the analysis KT block (a non-blank, non-radii
+            # line); stop before any forecast-hour radii.
+            break
     return out
 
 

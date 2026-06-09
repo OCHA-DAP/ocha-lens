@@ -160,6 +160,44 @@ def test_current_center_radii_absent():
     }
 
 
+def test_current_center_radii_stops_at_block_end_without_marker():
+    """Backstop: even if the FORECAST VALID/OUTLOOK VALID header were reworded,
+    the parser stops at the end of the first contiguous KT block, so a later
+    forecast-hour KT line can't overwrite the analysis radii."""
+    text = (
+        "NWS NATIONAL HURRICANE CENTER MIAMI FL       AL012026\n"
+        "MAX SUSTAINED WINDS 105 KT WITH GUSTS TO 120 KT.\n"
+        "64 KT....... 40NE  35SE  30SW  40NW.\n"
+        "50 KT....... 90NE  70SE  50SW  80NW.\n"
+        "34 KT.......150NE 140SE 100SW 140NW.\n"
+        "12 FT SEAS..120NE 150SE 120SW  90NW.\n"
+        # No "FORECAST VALID" marker here — simulate a header reword.
+        "SOMETHING ELSE 11/0600Z 25.0N 70.0W\n"
+        "MAX WIND 100 KT...GUSTS 120 KT.\n"
+        "64 KT....... 50NE  45SE  40SW  50NW.\n"
+    )
+    radii = _parse_current_center_radii(text)
+    # Analysis value kept; the later 50NE forecast-hour radius did not leak in.
+    assert radii["quadrant_radius_64"] == [40, 35, 30, 40]
+
+
+def test_current_center_radii_all_zero_kept():
+    """An all-zero analysis line is kept as [0, 0, 0, 0], not collapsed to
+    None, so it remains a usable numeric anchor for downstream interpolation."""
+    text = (
+        "NWS NATIONAL HURRICANE CENTER MIAMI FL       AL012026\n"
+        "MAX SUSTAINED WINDS 65 KT WITH GUSTS TO 80 KT.\n"
+        "64 KT.......  0NE   0SE   0SW   0NW.\n"
+        "50 KT.......  0NE   0SE   0SW   0NW.\n"
+        "34 KT....... 90NE  90SE  60SW  70NW.\n"
+        "FORECAST VALID 11/0600Z 25.0N 70.0W\n"
+    )
+    radii = _parse_current_center_radii(text)
+    assert radii["quadrant_radius_64"] == [0, 0, 0, 0]
+    assert radii["quadrant_radius_50"] == [0, 0, 0, 0]
+    assert radii["quadrant_radius_34"] == [90, 90, 60, 70]
+
+
 def test_observation_backfills_radii_from_advisory(monkeypatch):
     """End-to-end: the leadtime=0 observation (from CurrentStorms.json, which
     omits radii) is enriched with the advisory's analysis-time wind radii."""
