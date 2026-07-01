@@ -1,0 +1,56 @@
+{
+ "count": 221,
+ "next": null,
+ "previous": null,
+ "results": [
+  {
+   "code": "EMSR885",
+   "countries": [
+    "Spain"
+   ],
+   "eventTime": "2026-06-25T13:10:00",
+   "name": "Wildfire in Aragon, Spain",
+   "centroid": "POINT (0.326735391845018 41.96833064771739)",
+   "activationTime": "2026-06-25T22:29:00",
+   "category": "Wildfire",
+   "lastUpdate": "2026-06-26T08:22:38.752349",
+   "closed": false,
+   "gdacsId": null,
+   "n_aois": 1,
+   "n_products": 0
+  },
+  {
+   "code": "EMSR884",
+   "countries": [
+    "Venezuela"
+   ],
+   "eventTime": "2026-06-24T16:04:00",
+   "name": "Earthquake in Venezuela",
+   "centroid": "POINT (-67.80859040143667 10.277062692317687)",
+   "activationTime": "2026-06-25T03:51:00",
+   "category": "Earthquake",
+   "lastUpdate": "2026-06-26T14:51:05.030884",
+   "closed": false,
+   "gdacsId": "EQ1548377",
+   "n_aois": 13,
+   "n_products": 5
+  },
+  {
+   "code": "EMSR883",
+   "countries": [
+    "Greenland",
+    "Denmark"
+   ],
+   "eventTime": "2026-06-15T22:00:00",
+   "name": "Wildfire in Greenland",
+   "centroid": "POINT (-53.4051812291109 67.12146752394848)",
+   "activationTime": "2026-06-16T09:08:00",
+   "category": "Wildfire",
+   "lastUpdate": "2026-06-19T07:31:06.745585",
+   "closed": true,
+   "gdacsId": null,
+   "n_aois": 1,
+   "n_products": 2
+  }
+ ]
+}

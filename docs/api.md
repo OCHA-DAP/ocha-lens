@@ -135,6 +135,41 @@ The `adam` module provides access to WFP [ADAM](https://gis.wfp.org/adam/) (Auto
 .. autofunction:: ocha_lens.adam.name_to_iso3
 ```
 
+## Copernicus EMS Rapid Mapping
+
+The `cems` module provides access to [Copernicus EMS Rapid Mapping](https://rapidmapping.emergency.copernicus.eu/) emergency activation products: activation discovery, the nested activation detail tree, flattened product/layer/statistics tables, and helpers for downloading products individually or in bulk. No authentication is required.
+
+### Discovery
+
+```{eval-rst}
+.. autofunction:: ocha_lens.cems.get_activations
+.. autofunction:: ocha_lens.cems.get_activation
+```
+
+### Flattened Views
+
+```{eval-rst}
+.. autofunction:: ocha_lens.cems.get_products
+.. autofunction:: ocha_lens.cems.get_catalog
+.. autofunction:: ocha_lens.cems.get_stats
+```
+
+### Downloading
+
+```{eval-rst}
+.. autofunction:: ocha_lens.cems.download_products
+.. autofunction:: ocha_lens.cems.download_product
+.. autofunction:: ocha_lens.cems.download_activation_bundle
+.. autofunction:: ocha_lens.cems.download_geojson
+.. autofunction:: ocha_lens.cems.download_file
+```
+
+### Persistence
+
+```{eval-rst}
+.. autofunction:: ocha_lens.cems.to_blob
+```
+
 ## Storm Utilities
 
 The `utils.storm` module provides shared geometry and matching helpers used across the cyclone datasources, including wind-buffer construction and matching NHC Wind Speed Probability (WSP) polygons to storm tracks.
