@@ -436,14 +436,30 @@ def get_activations(
     if closed is not None:
         df = df[df["closed"] == closed]
     if country is not None:
+        # regex=False: `country` is a literal substring (the documented
+        # contract), not a pattern. Without it, names/inputs containing regex
+        # metacharacters misbehave — e.g. "Congo (the" raises re.error on the
+        # unbalanced paren, and "a.b" would match "aXb".
         df = df[
             df["countries"]
             .fillna("")
             .str.casefold()
-            .str.contains(country.casefold())
+            .str.contains(country.casefold(), regex=False)
         ]
 
-    df = df.sort_values("code", ascending=False).reset_index(drop=True)
+    # Sort newest-first by the numeric suffix of the code, not lexicographically:
+    # once codes reach 4 digits, "EMSR999" would sort after "EMSR1000" as a
+    # string. Non-numeric/unmatched codes (shouldn't occur) sort last, with the
+    # raw code as a stable tiebreak.
+    order = pd.to_numeric(
+        df["code"].str.extract(r"(\d+)", expand=False), errors="coerce"
+    )
+    df = (
+        df.assign(_order=order)
+        .sort_values(["_order", "code"], ascending=False)
+        .drop(columns="_order")
+        .reset_index(drop=True)
+    )
     return ACTIVATION_SCHEMA.validate(df)
 
 

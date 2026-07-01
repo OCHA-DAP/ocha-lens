@@ -107,6 +107,42 @@ def test_get_activations_filters(monkeypatch, list_payload):
     assert (spain["countries"].str.contains("Spain")).all()
 
 
+def test_get_activations_country_is_literal_not_regex(
+    monkeypatch, list_payload
+):
+    # `country` is a literal substring, not a regex. A name with regex
+    # metacharacters (parentheses) must not raise, and a metachar in the query
+    # must not match arbitrarily.
+    rec = {
+        **list_payload["results"][0],
+        "code": "EMSR900",
+        "countries": ["Congo (the Democratic Republic of the)"],
+    }
+    payload = {**list_payload, "results": [rec], "next": None}
+    _install_get_json(monkeypatch, lambda u, p: payload)
+
+    # Unbalanced paren in the query would be an re.error under regex=True.
+    hit = cems.get_activations(country="Congo (the")
+    assert len(hit) == 1
+    # A regex wildcard must be treated literally: "a.b" doesn't match "...ratic".
+    assert cems.get_activations(country="a.b").empty
+
+
+def test_get_activations_sorts_by_numeric_code(monkeypatch, list_payload):
+    # Newest-first must hold once codes reach 4 digits: EMSR1000 > EMSR999.
+    base = list_payload["results"][0]
+    recs = [
+        {**base, "code": "EMSR999"},
+        {**base, "code": "EMSR1000"},
+        {**base, "code": "EMSR885"},
+    ]
+    payload = {**list_payload, "results": recs, "next": None}
+    _install_get_json(monkeypatch, lambda u, p: payload)
+
+    df = cems.get_activations()
+    assert list(df["code"]) == ["EMSR1000", "EMSR999", "EMSR885"]
+
+
 def test_get_activations_empty(monkeypatch):
     _install_get_json(monkeypatch, lambda u, p: {"results": [], "next": None})
     df = cems.get_activations()
