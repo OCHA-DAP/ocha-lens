@@ -13,8 +13,23 @@ from ocha_lens.datasources.nhc import (
 FIXTURES_PATH = Path(__file__).parent / "fixtures"
 
 
-def test_json_sample_observations():
-    """Test parsing observational data from NHC JSON sample."""
+def test_json_sample_observations(monkeypatch):
+    """Test parsing observational data from NHC JSON sample.
+
+    Network is disabled for this test: load_nhc follows advisory URLs
+    embedded in the sample JSON, so with live access the CURRENT NHC
+    advisories leak into the 2023 fixture parse and the counts drift
+    with the real-world storm calendar (first seen 2026-08-31, when
+    active-storm advisories inflated 4 tracks to 12 — issue #52 tracks
+    whether a file_path load should fetch at all). The loader tolerates
+    fetch failures, so blocking the socket pins the test to the fixture.
+    """
+    import socket
+
+    def _no_network(*args, **kwargs):
+        raise OSError("network disabled: parse only the local fixture")
+
+    monkeypatch.setattr(socket, "getaddrinfo", _no_network)
     sample_json_path = FIXTURES_PATH / "NHC_JSON_Sample.json"
     df_raw = load_nhc(file_path=sample_json_path, use_cache=False)
     df_storms = get_storms(df_raw)

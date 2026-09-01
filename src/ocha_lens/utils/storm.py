@@ -567,7 +567,7 @@ def match_wsp_to_tracks(
 ) -> gpd.GeoDataFrame:
     """Match WSP polygons to NHC track forecasts.
 
-    Two passes per polygon part, in order:
+    Three passes per polygon part, in order:
 
     1. **Line-intersection.** A part is matched to an atcf_id if that
        storm's track LineString (the polyline through its track points at
@@ -580,6 +580,19 @@ def match_wsp_to_tracks(
        same (issued_time, wind_threshold_kt). The filled (donut-hole-
        ignoring) exterior of each candidate container is tested against
        the filled part. The smallest qualifying container wins.
+
+    3. **Cross-threshold containment fallback.** If a part is STILL
+       unmatched, check containment against matched polygons at the same
+       issued_time but a LOWER wind_threshold_kt: a storm's
+       higher-threshold probability area nests inside its own
+       lower-threshold area, so a trailing band a weakening storm's track
+       line no longer touches — with no matched same-threshold sibling to
+       contain it — still sits inside that storm's matched lower-kt
+       footprint. Because the nesting rationale is single-storm, the part
+       is attributed only when every containing lower-kt donor names the
+       same storm; if donors from two storms both contain it, it is left
+       unmatched rather than risk a misattribution that would be
+       invisible downstream. See docs/decisions/0001 for the trade-off.
 
     Parts are processed in **ascending percentage order** within each
     (issued_time, wind_threshold_kt) group so that the big outer bands
@@ -650,14 +663,17 @@ def match_wsp_to_tracks(
     gdf_tracks["issued_time"] = _to_naive_utc(gdf_tracks["issued_time"])
 
     # Explode every WSP MultiPolygon up front so each row is a single part,
-    # then sort by percentage ascending so big outer bands are matched
-    # first and are available as containment-fallback donors for the small
-    # inner bands that come after.
+    # then sort ascending so big outer bands are matched first and are
+    # available as containment-fallback donors for the parts that come
+    # after. The (issued_time, wind_threshold_kt) order is load-bearing:
+    # pass 3 relies on every lower-kt part having been processed before
+    # any higher-kt part of the same issuance, so it is applied even when
+    # the optional percentage column is absent.
     gdf_exp = gdf_wsp.explode(index_parts=False).reset_index(drop=True)
+    sort_cols = ["issued_time", "wind_threshold_kt"]
     if "percentage" in gdf_exp.columns:
-        gdf_exp = gdf_exp.sort_values(
-            ["issued_time", "wind_threshold_kt", "percentage"]
-        ).reset_index(drop=True)
+        sort_cols.append("percentage")
+    gdf_exp = gdf_exp.sort_values(sort_cols).reset_index(drop=True)
 
     # Pre-build storm-track lines per issued_time once (avoids rebuilding
     # for every polygon part).
@@ -669,8 +685,14 @@ def match_wsp_to_tracks(
 
     # Per (issued_time, wind_threshold_kt), accumulate matched parts as we
     # iterate so later parts can fall back to containment. Each entry is
-    # (filled_geom, atcf_id, area). Seeded from extra_containers.
+    # (filled_geom, atcf_id, filled_area) — the area is the FILLED extent,
+    # matching the geometry the containment test runs against, so the
+    # smallest-container tiebreak can't be gamed by a wide annulus whose
+    # donut hole shrinks its unfilled area. Seeded from extra_containers.
+    # kts_by_it tracks which thresholds hold entries per issued_time so
+    # pass 3 can look donors up directly instead of scanning the dict.
     matched_by_key: dict[tuple, list[tuple]] = {}
+    kts_by_it: dict = {}
     if extra_containers is not None and not extra_containers.empty:
         extra_containers = extra_containers.copy()
         extra_containers["issued_time"] = _to_naive_utc(
@@ -687,30 +709,63 @@ def match_wsp_to_tracks(
             if g is None or g.is_empty:
                 continue
             key = (c["issued_time"], c["wind_threshold_kt"])
+            fg = _filled_geom(g)
             matched_by_key.setdefault(key, []).append(
-                (_filled_geom(g), c["atcf_id"], g.area)
+                (fg, c["atcf_id"], fg.area)
+            )
+            kts_by_it.setdefault(c["issued_time"], set()).add(
+                c["wind_threshold_kt"]
             )
 
-    def _containment_match(part_geom, key):
-        """Return atcf_id of the smallest existing container that fully
-        contains ``part_geom`` (donut holes ignored), or None."""
-        candidates_for_key = matched_by_key.get(key, [])
-        if not candidates_for_key:
-            return None
-        filled_part = _filled_geom(part_geom)
-        best_aid = None
-        best_area = None
-        for container_filled, aid, area in candidates_for_key:
-            if container_filled.contains(filled_part):
-                if best_area is None or area < best_area:
-                    best_aid = aid
-                    best_area = area
-        return best_aid
+    def _register(it, kt, filled, aid):
+        matched_by_key.setdefault((it, kt), []).append(
+            (filled, aid, filled.area)
+        )
+        kts_by_it.setdefault(it, set()).add(kt)
+
+    def _containing_entries(filled_part, entries):
+        """(filled_area, atcf_id) of every container that fully contains
+        the (already filled) part — donut holes ignored on both sides."""
+        return [
+            (area, aid)
+            for container_filled, aid, area in entries
+            if container_filled.contains(filled_part)
+        ]
+
+    def _containment_match(filled_part, key):
+        """Pass 2: atcf_id of the smallest same-threshold container that
+        fully contains the part, or None."""
+        hits = _containing_entries(filled_part, matched_by_key.get(key, []))
+        return min(hits)[1] if hits else None
+
+    def _containment_match_lower_kt(filled_part, it, kt):
+        """Pass 3: containment against every LOWER wind threshold at the
+        same issued_time (a storm's higher-threshold bands nest inside its
+        own lower-threshold ones; ascending-kt processing order guarantees
+        those donors were matched first). Attributes only when every
+        containing donor names the SAME storm — if two storms' footprints
+        both contain the part, the single-storm nesting rationale no
+        longer identifies one owner, and misattributing here would be
+        invisible downstream (unlike an unmatched part), so the part is
+        left unmatched instead."""
+        hits: list = []
+        for c_kt in kts_by_it.get(it, ()):
+            if c_kt < kt:
+                hits += _containing_entries(
+                    filled_part, matched_by_key[(it, c_kt)]
+                )
+        aids = {aid for _, aid in hits}
+        return aids.pop() if len(aids) == 1 else None
 
     rows: list[dict] = []
     for _, row in gdf_exp.iterrows():
         it = row["issued_time"]
         kt = row["wind_threshold_kt"]
+        # Filled once per part; every pass and the container registration
+        # below share it (rebuilding it per pass is measurably expensive
+        # for high-vertex WSP bands).
+        filled = _filled_geom(row.geometry)
+
         # --- Pass 1: line-intersection at T and T+3h ---
         candidates: dict = {}
         if it in lines_by_it:
@@ -726,14 +781,19 @@ def match_wsp_to_tracks(
             matched = _atcf_ids_intersecting_polygon(row.geometry, candidates)
             # Same storm at both T and T+3h: try the it+3h variant too.
             if it_plus in lines_by_it:
-                filled = _filled_geom(row.geometry)
                 for aid, ln in lines_by_it[it_plus].items():
                     if aid not in matched and filled.intersects(ln):
                         matched.append(aid)
 
         # --- Pass 2: containment fallback for still-unmatched parts ---
         if not matched:
-            aid = _containment_match(row.geometry, (it, kt))
+            aid = _containment_match(filled, (it, kt))
+            if aid is not None:
+                matched = [aid]
+
+        # --- Pass 3: cross-threshold containment (lower kt, same it) ---
+        if not matched:
+            aid = _containment_match_lower_kt(filled, it, kt)
             if aid is not None:
                 matched = [aid]
 
@@ -742,17 +802,14 @@ def match_wsp_to_tracks(
             r["atcf_id"] = None
             rows.append(r)
         else:
-            filled = _filled_geom(row.geometry)
-            area = row.geometry.area
             for atcf_id in matched:
                 r = row.to_dict()
                 r["atcf_id"] = atcf_id
                 rows.append(r)
                 # Make this newly-matched part available as a container
-                # for later higher-band parts at the same (it, kt).
-                matched_by_key.setdefault((it, kt), []).append(
-                    (filled, atcf_id, area)
-                )
+                # for later parts (same threshold via pass 2, higher
+                # thresholds via pass 3).
+                _register(it, kt, filled, atcf_id)
 
     out = gpd.GeoDataFrame(rows, geometry="geometry", crs=gdf_wsp.crs)
     return out
