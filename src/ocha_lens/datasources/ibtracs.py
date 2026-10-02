@@ -316,6 +316,7 @@ def get_tracks(ds: xr.Dataset, track_type: str = "all") -> gpd.GeoDataFrame:
     pandas.DataFrame
         DataFrame containing track data with standardized column names
     """
+    ds = _mask_invalid_gusts(ds)
     if track_type == "provisional":
         return _get_provisional_tracks(ds)
     elif track_type == "best":
@@ -651,6 +652,48 @@ def _get_best_tracks(ds: xr.Dataset) -> gpd.GeoDataFrame:
         logger.warning("Returning empty geodataframe of best tracks")
         return gdf
     return TRACK_SCHEMA.validate(gdf)
+
+
+def _mask_invalid_gusts(ds: xr.Dataset) -> xr.Dataset:
+    """
+    Set agency gust values outside the variable's declared valid range to NaN.
+
+    Some agencies encode a missing gust with a sentinel rather than the
+    dataset fill value (e.g. 999 in ``reunion_gust``), which xarray does not
+    mask and which then fails the ``gust_speed`` check in TRACK_SCHEMA.
+    Only ``*_gust`` variables are masked: the radii and wind variables also
+    hold values outside their declared ranges (0 radii, -1 winds) that are
+    meaningful and kept.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        IBTrACS dataset containing storm track data
+
+    Returns
+    -------
+    xarray.Dataset
+        Copy of the dataset with out-of-range gust values set to NaN
+    """
+    ds = ds.copy()
+    for var in [v for v in ds.data_vars if v.endswith("_gust")]:
+        valid_min = ds[var].attrs.get("valid_min")
+        valid_max = ds[var].attrs.get("valid_max")
+        if valid_min is None and valid_max is None:
+            continue
+        invalid = xr.zeros_like(ds[var], dtype=bool)
+        if valid_min is not None:
+            invalid |= ds[var] < valid_min
+        if valid_max is not None:
+            invalid |= ds[var] > valid_max
+        n_invalid = int(invalid.sum())
+        if n_invalid:
+            logger.warning(
+                f"Masking {n_invalid} {var} values outside the declared "
+                f"valid range [{valid_min}, {valid_max}]"
+            )
+            ds[var] = ds[var].where(~invalid)
+    return ds
 
 
 def _convert_string_columns(
