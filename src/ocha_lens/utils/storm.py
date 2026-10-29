@@ -5,9 +5,11 @@ import antimeridian
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import shapely
+from pyproj import Geod
 from scipy.interpolate import PchipInterpolator
 from shapely import Polygon
-from shapely.geometry import LineString, MultiPolygon, Point
+from shapely.geometry import LineString, MultiPolygon, Point, box
 from shapely.validation import make_valid
 
 QUADS = ["ne", "se", "sw", "nw"]
@@ -391,17 +393,134 @@ def build_merged_wind_buffer(
     return gpd.GeoSeries(polys).union_all()
 
 
+_GEOD = Geod(ellps="WGS84")
+
+
+def make_geodesic_quadrant_disk(
+    lon: float,
+    lat: float,
+    ne: float,
+    se: float,
+    sw: float,
+    nw: float,
+    n_points: int = 360,
+) -> Polygon:
+    """Polygon around (lon, lat) reaching the quadrant radii on the ground.
+
+    Radii are in metres and measured along geodesics on the WGS84
+    ellipsoid, so the disk is the true area within that distance of the
+    centre at any latitude (a disk drawn in Mercator metres instead is
+    too small by a factor of cos(latitude)). The radius is interpolated
+    linearly in bearing between the four quadrant centres (NE at 45°,
+    SE at 135°, SW at 225°, NW at 315°).
+
+    Vertex longitudes are continuous around ``lon`` (they can leave
+    [-180, 180]), so disks near the antimeridian can be unioned without
+    wrapping; ``split_at_antimeridian`` brings the result back.
+    """
+    az = np.linspace(0.0, 360.0, n_points, endpoint=False)
+    ctrl_az = np.array([45.0, 135.0, 225.0, 315.0, 405.0])
+    ctrl_r = np.array([ne, se, sw, nw, ne], dtype=float)
+    az_wrap = np.where(az < 45.0, az + 360.0, az)
+    r = np.interp(az_wrap, ctrl_az, ctrl_r)
+    lons, lats, _ = _GEOD.fwd(
+        np.full(n_points, lon), np.full(n_points, lat), az, r
+    )
+    lons = lon + ((np.asarray(lons) - lon + 180.0) % 360.0 - 180.0)
+    # fwd traces clockwise; reverse for a counter-clockwise exterior.
+    return Polygon(np.column_stack([lons, lats])[::-1])
+
+
+def split_at_antimeridian(geom):
+    """Bring a polygon with continuous longitudes back into [-180, 180].
+
+    Parts east of 180° or west of -180° are clipped off and shifted by
+    360°, so a swath crossing the dateline comes back as a MultiPolygon
+    with parts on both sides and no part spanning more than 360°.
+    """
+    if geom is None or geom.is_empty:
+        return geom
+    if not geom.is_valid:
+        geom = make_valid(geom)
+    minx, _, maxx, _ = geom.bounds
+    if minx < -540.0 or maxx > 540.0 or maxx - minx > 360.0:
+        warnings.warn(
+            "split_at_antimeridian: geometry spans more than one turn of "
+            f"longitude ({minx:.1f} to {maxx:.1f}); parts may overlap or be lost"
+        )
+    parts = []
+    for k in (-1, 0, 1):
+        window = box(-180.0 + 360.0 * k, -90.0, 180.0 + 360.0 * k, 90.0)
+        piece = geom.intersection(window)
+        if piece.is_empty:
+            continue
+        if k:
+            piece = shapely.affinity.translate(piece, xoff=-360.0 * k)
+        parts.extend(
+            p
+            for p in getattr(piece, "geoms", [piece])
+            if p.geom_type == "Polygon" and not p.is_empty
+        )
+    if not parts:
+        return Polygon()
+    out = shapely.union_all(parts)
+    if not out.is_valid:
+        out = make_valid(out)
+    return out
+
+
+def _geodesic_wind_buffers(
+    gdf_interp: gpd.GeoDataFrame,
+    quad_cols_format: str,
+    speeds: list,
+) -> gpd.GeoDataFrame:
+    lon = antimeridian_safe_lon(gdf_interp.geometry.x.to_numpy(float))
+    lat = gdf_interp.geometry.y.to_numpy(float)
+    dicts, geoms = [], []
+    for speed in speeds:
+        cols = [quad_cols_format.format(speed=speed, quad=q) for q in QUADS]
+        radii = gdf_interp[cols].to_numpy(float)
+        disks = []
+        for x, y, row in zip(lon, lat, radii):
+            # Same rules as build_merged_wind_buffer: a point with no
+            # radii contributes nothing; a missing quadrant reaches zero.
+            if np.isnan(row).all():
+                continue
+            row = np.nan_to_num(row, nan=0.0) * NM_TO_M
+            if not row.any():
+                continue
+            disks.append(make_geodesic_quadrant_disk(x, y, *row))
+        geom = (
+            split_at_antimeridian(shapely.union_all(disks)) if disks else None
+        )
+        dicts.append({"wind_speed_kt": speed})
+        geoms.append(geom)
+    return gpd.GeoDataFrame(dicts, geometry=geoms, crs="EPSG:4326")
+
+
 def calculate_wind_buffers_gdf(
     gdf: gpd.GeoDataFrame,
     quad_cols_format: str = "usa_quadrant_radius_{speed}_{quad}",
     valid_time_col: str = "valid_time",
+    method: str = "mercator",
+    speeds: list | None = None,
 ):
     """Calculate wind buffer polygons for each wind-speed threshold.
 
     The storm track is interpolated to a regular 30-minute interval
-    before the per-quadrant wind buffers are built. Reprojection goes
-    through a basin-appropriate ``lon_wrap`` CRS so antimeridian-crossing
-    tracks have continuous longitudes before projecting to Mercator.
+    before the per-quadrant wind buffers are built.
+
+    ``method="mercator"`` (the default, unchanged) draws each disk in
+    the basin's Mercator projection, going through a basin-appropriate
+    ``lon_wrap`` CRS so antimeridian-crossing tracks have continuous
+    longitudes. Mercator metres are not ground metres: those disks reach
+    only cos(latitude) of the intended radius (about 95% at 18°,
+    91% at 25°, 82% at 35°).
+
+    ``method="geodesic"`` measures each radius along geodesics on the
+    WGS84 ellipsoid instead, so the buffers reach the stated distances
+    at any latitude; disks are unioned with continuous longitudes and
+    split at ±180° once, at the end.
 
     Parameters
     ----------
@@ -414,13 +533,26 @@ def calculate_wind_buffers_gdf(
     valid_time_col : str, default ``"valid_time"``
         Name of the valid-time column used to order and interpolate the
         track.
+    method : {"mercator", "geodesic"}, default ``"mercator"``
+        How disk radii are measured (see above).
+    speeds : list of int, optional
+        Wind thresholds (knots) to build; defaults to ``BUFFER_SPEEDS``.
 
     Returns
     -------
     gpd.GeoDataFrame
-        One row per wind-speed threshold (``wind_speed_kt`` in
-        {34, 50, 64}) with the merged buffer ``geometry`` (EPSG:4326).
+        One row per wind-speed threshold (``wind_speed_kt``) with the
+        merged buffer ``geometry`` (EPSG:4326).
     """
+    if method not in ("mercator", "geodesic"):
+        raise ValueError(
+            f"method must be 'mercator' or 'geodesic', got {method!r}"
+        )
+    speeds = list(BUFFER_SPEEDS if speeds is None else speeds)
+    if method == "geodesic":
+        gdf_interp = interpolate_track(gdf, time_col=valid_time_col)
+        return _geodesic_wind_buffers(gdf_interp, quad_cols_format, speeds)
+
     basin = gdf["basin"].iloc[0] if "basin" in gdf.columns else None
     geo_crs = BASIN_GEO_CRS.get(basin, GEO_CRS_MERIDIAN)
     proj_crs = BASIN_PROJ_CRS.get(basin, PROJ_CRS_MERIDIAN)
@@ -435,7 +567,7 @@ def calculate_wind_buffers_gdf(
     gdf_interp = gdf_interp.to_crs(proj_crs)
     dicts = []
     geoms = []
-    for speed in BUFFER_SPEEDS:
+    for speed in speeds:
         speed_quad_cols = tuple(
             quad_cols_format.format(speed=speed, quad=x) for x in QUADS
         )
