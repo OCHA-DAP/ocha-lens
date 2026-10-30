@@ -184,6 +184,8 @@ The `utils.storm` module provides shared geometry and matching helpers used acro
 
 ```{eval-rst}
 .. autofunction:: ocha_lens.utils.storm.calculate_wind_buffers_gdf
+.. autofunction:: ocha_lens.utils.storm.make_geodesic_quadrant_disk
+.. autofunction:: ocha_lens.utils.storm.fix_antimeridian
 ```
 
 ### WSP–Track Matching
