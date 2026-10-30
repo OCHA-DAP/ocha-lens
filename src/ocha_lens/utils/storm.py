@@ -5,11 +5,11 @@ import antimeridian
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-import shapely
 from pyproj import Geod
 from scipy.interpolate import PchipInterpolator
 from shapely import Polygon
-from shapely.geometry import LineString, MultiPolygon, Point, box
+from shapely.geometry import LineString, MultiPolygon, Point
+from shapely.ops import transform as _shapely_transform
 from shapely.validation import make_valid
 
 QUADS = ["ne", "se", "sw", "nw"]
@@ -350,6 +350,7 @@ def make_quadrant_disk(
 def build_merged_wind_buffer(
     gdf: gpd.GeoDataFrame,
     quad_cols: Tuple[str, str, str, str],
+    make_disk=make_quadrant_disk,
 ):
     """
     Build a merged wind buffer polygon from quadrant radii columns.
@@ -360,6 +361,10 @@ def build_merged_wind_buffer(
     quad_cols: Tuple[str, str, str, str]
         Names of the four quadrant radius columns in order:
         (ne_col, se_col, sw_col, nw_col)
+    make_disk: callable, default ``make_quadrant_disk``
+        ``make_disk((x, y), ne, se, sw, nw)`` -> Polygon, radii in metres:
+        ``make_quadrant_disk`` (projected coordinates) or
+        ``make_geodesic_quadrant_disk`` (longitude/latitude).
 
     Returns
     -------
@@ -379,7 +384,7 @@ def build_merged_wind_buffer(
             continue
         # Partial radii: a missing quadrant means zero reach there.
         radii = radii.fillna(0) * NM_TO_M
-        poly = make_quadrant_disk(
+        poly = make_disk(
             (row.geometry.x, row.geometry.y),
             radii[quad_cols[0]],
             radii[quad_cols[1]],
@@ -397,8 +402,7 @@ _GEOD = Geod(ellps="WGS84")
 
 
 def make_geodesic_quadrant_disk(
-    lon: float,
-    lat: float,
+    center_lonlat: Tuple[float, float],
     ne: float,
     se: float,
     sw: float,
@@ -407,95 +411,85 @@ def make_geodesic_quadrant_disk(
 ) -> Polygon:
     """Polygon around (lon, lat) reaching the quadrant radii on the ground.
 
-    Radii are in metres and measured along geodesics on the WGS84
-    ellipsoid, so the disk is the true area within that distance of the
-    centre at any latitude (a disk drawn in Mercator metres instead is
-    too small by a factor of cos(latitude)). The radius is interpolated
-    linearly in bearing between the four quadrant centres (NE at 45°,
-    SE at 135°, SW at 225°, NW at 315°).
+    The geodesic counterpart of ``make_quadrant_disk``: same quadrant
+    interpolation (``_radius_from_quadrants``), but radii are metres along
+    geodesics on the WGS84 ellipsoid, so the disk covers the true area
+    within that distance of the centre at any latitude (a disk drawn in
+    Mercator metres reaches only cos(latitude) of the radius).
 
-    Vertex longitudes are continuous around ``lon`` (they can leave
-    [-180, 180]), so disks near the antimeridian can be unioned without
-    wrapping; ``split_at_antimeridian`` brings the result back.
+    Vertex longitudes are continuous around the centre (they can leave
+    [-180, 180]), so disks near the antimeridian union without wrapping;
+    wrap the union and pass it through ``fix_antimeridian`` afterwards.
     """
+    lon, lat = center_lonlat
+    # Compass azimuths, clockwise from north; _radius_from_quadrants takes
+    # mathematical bearings (0 = east, counter-clockwise).
     az = np.linspace(0.0, 360.0, n_points, endpoint=False)
-    ctrl_az = np.array([45.0, 135.0, 225.0, 315.0, 405.0])
-    ctrl_r = np.array([ne, se, sw, nw, ne], dtype=float)
-    az_wrap = np.where(az < 45.0, az + 360.0, az)
-    r = np.interp(az_wrap, ctrl_az, ctrl_r)
+    r = _radius_from_quadrants(np.mod(90.0 - az, 360.0), ne, se, sw, nw)
     lons, lats, _ = _GEOD.fwd(
         np.full(n_points, lon), np.full(n_points, lat), az, r
     )
     lons = lon + ((np.asarray(lons) - lon + 180.0) % 360.0 - 180.0)
-    # fwd traces clockwise; reverse for a counter-clockwise exterior.
+    # Azimuths run clockwise; reverse for a counter-clockwise exterior.
     return Polygon(np.column_stack([lons, lats])[::-1])
 
 
-def split_at_antimeridian(geom):
-    """Bring a polygon with continuous longitudes back into [-180, 180].
+def _fix_antimeridian_part(p):
+    try:
+        # fix_winding=True silences FixWindingWarning while keeping the
+        # winding-reversal behavior (which is what we want for shapely
+        # polygons that come out clockwise from the projected CRS).
+        return antimeridian.fix_polygon(p, fix_winding=True)
+    except ValueError:
+        # Degenerate (e.g. <4 unique vertices after dedup) — skip
+        # antimeridian and let make_valid below handle anything else.
+        return p
 
-    Parts east of 180° or west of -180° are clipped off and shifted by
-    360°, so a swath crossing the dateline comes back as a MultiPolygon
-    with parts on both sides and no part spanning more than 360°.
+
+def fix_antimeridian(g):
+    """Split a polygon whose ring jumps across ±180° into parts on either side.
+
+    For geometries in EPSG:4326 whose longitudes were wrapped into
+    [-180, 180] (as pyproj returns them, or after wrapping continuous
+    longitudes): a swath crossing the dateline otherwise reads as one
+    polygon spanning the globe the wrong way round.
+
+    Applies antimeridian.fix_polygon BEFORE make_valid: fix_polygon
+    understands the dateline-crossing semantics and splits cleanly at
+    ±180. make_valid first would misinterpret the wraparound as a self-
+    intersection and slice the polygon along latitude lines to "resolve"
+    it — producing more parts than necessary.
+
+    Per-part handling: antimeridian.fix_multi_polygon iterates each part
+    and raises on any degenerate sub-polygon (fewer than 4 unique
+    vertices after dedup), poisoning the whole MultiPolygon. We iterate
+    ourselves and fall back to the original part on per-part failure.
     """
-    if geom is None or geom.is_empty:
-        return geom
-    if not geom.is_valid:
-        geom = make_valid(geom)
-    minx, _, maxx, _ = geom.bounds
-    if minx < -540.0 or maxx > 540.0 or maxx - minx > 360.0:
-        warnings.warn(
-            "split_at_antimeridian: geometry spans more than one turn of "
-            f"longitude ({minx:.1f} to {maxx:.1f}); parts may overlap or be lost"
-        )
-    parts = []
-    for k in (-1, 0, 1):
-        window = box(-180.0 + 360.0 * k, -90.0, 180.0 + 360.0 * k, 90.0)
-        piece = geom.intersection(window)
-        if piece.is_empty:
-            continue
-        if k:
-            piece = shapely.affinity.translate(piece, xoff=-360.0 * k)
-        parts.extend(
-            p
-            for p in getattr(piece, "geoms", [piece])
-            if p.geom_type == "Polygon" and not p.is_empty
-        )
-    if not parts:
-        return Polygon()
-    out = shapely.union_all(parts)
-    if not out.is_valid:
-        out = make_valid(out)
-    return out
+    if g is None or g.is_empty:
+        return g
+    if g.geom_type == "Polygon":
+        g = _fix_antimeridian_part(g)
+    elif g.geom_type == "MultiPolygon":
+        parts = []
+        for p in g.geoms:
+            fixed = _fix_antimeridian_part(p)
+            if fixed.geom_type == "Polygon":
+                parts.append(fixed)
+            elif fixed.geom_type == "MultiPolygon":
+                parts.extend(list(fixed.geoms))
+        g = MultiPolygon(parts) if parts else g
+    if not g.is_valid:
+        g = make_valid(g)
+    return g
 
 
-def _geodesic_wind_buffers(
-    gdf_interp: gpd.GeoDataFrame,
-    quad_cols_format: str,
-    speeds: list,
-) -> gpd.GeoDataFrame:
-    lon = antimeridian_safe_lon(gdf_interp.geometry.x.to_numpy(float))
-    lat = gdf_interp.geometry.y.to_numpy(float)
-    dicts, geoms = [], []
-    for speed in speeds:
-        cols = [quad_cols_format.format(speed=speed, quad=q) for q in QUADS]
-        radii = gdf_interp[cols].to_numpy(float)
-        disks = []
-        for x, y, row in zip(lon, lat, radii):
-            # Same rules as build_merged_wind_buffer: a point with no
-            # radii contributes nothing; a missing quadrant reaches zero.
-            if np.isnan(row).all():
-                continue
-            row = np.nan_to_num(row, nan=0.0) * NM_TO_M
-            if not row.any():
-                continue
-            disks.append(make_geodesic_quadrant_disk(x, y, *row))
-        geom = (
-            split_at_antimeridian(shapely.union_all(disks)) if disks else None
-        )
-        dicts.append({"wind_speed_kt": speed})
-        geoms.append(geom)
-    return gpd.GeoDataFrame(dicts, geometry=geoms, crs="EPSG:4326")
+def _wrap_longitudes(g):
+    """Longitudes back into [-180, 180] (vertex by vertex)."""
+    if g is None or g.is_empty:
+        return g
+    return _shapely_transform(
+        lambda x, y: ((np.asarray(x) + 180.0) % 360.0 - 180.0, y), g
+    )
 
 
 def calculate_wind_buffers_gdf(
@@ -518,9 +512,21 @@ def calculate_wind_buffers_gdf(
     91% at 25°, 82% at 35°).
 
     ``method="geodesic"`` measures each radius along geodesics on the
-    WGS84 ellipsoid instead, so the buffers reach the stated distances
-    at any latitude; disks are unioned with continuous longitudes and
-    split at ±180° once, at the end.
+    WGS84 ellipsoid instead (``make_geodesic_quadrant_disk``), so the
+    buffers reach the stated distances at any latitude; disks are unioned
+    with continuous longitudes, then wrapped and split at ±180° by the
+    same ``fix_antimeridian`` as the Mercator branch. Both methods go through
+    ``build_merged_wind_buffer``, so missing and zero radii are treated
+    alike: a point with no radii at all for a threshold adds nothing, a
+    missing quadrant reaches zero, and all-zero radii give an empty
+    polygon (no radii anywhere gives None).
+
+    Radius columns are interpolated linearly to the 30-minute grid
+    (``interpolate_track``), so a NaN at one track point makes the
+    interpolated values on both sides of it NaN, up to the neighbouring
+    points: a single missing quadrant at a 6-hourly point means zero reach
+    in that quadrant for about 12 hours. Drop or fill such rows first
+    where that matters.
 
     Parameters
     ----------
@@ -536,7 +542,9 @@ def calculate_wind_buffers_gdf(
     method : {"mercator", "geodesic"}, default ``"mercator"``
         How disk radii are measured (see above).
     speeds : list of int, optional
-        Wind thresholds (knots) to build; defaults to ``BUFFER_SPEEDS``.
+        Wind thresholds (knots) to build, a subset of ``BUFFER_SPEEDS``
+        (the values the storm table schemas accept); defaults to all of
+        them.
 
     Returns
     -------
@@ -549,9 +557,39 @@ def calculate_wind_buffers_gdf(
             f"method must be 'mercator' or 'geodesic', got {method!r}"
         )
     speeds = list(BUFFER_SPEEDS if speeds is None else speeds)
+    unknown = sorted(set(speeds) - set(BUFFER_SPEEDS))
+    if unknown:
+        raise ValueError(
+            f"speeds must be among {BUFFER_SPEEDS} (what the storm schemas "
+            f"accept), got {unknown}"
+        )
+
+    def _speed_cols(speed):
+        return tuple(
+            quad_cols_format.format(speed=speed, quad=x) for x in QUADS
+        )
+
     if method == "geodesic":
         gdf_interp = interpolate_track(gdf, time_col=valid_time_col)
-        return _geodesic_wind_buffers(gdf_interp, quad_cols_format, speeds)
+        # Continuous longitudes along the track, so disks on either side
+        # of ±180° union without wrapping.
+        lon = antimeridian_safe_lon(gdf_interp.geometry.x.to_numpy(float))
+        points = gdf_interp.set_geometry(
+            gpd.points_from_xy(lon, gdf_interp.geometry.y.to_numpy(float))
+        )
+        geoms = [
+            build_merged_wind_buffer(
+                points,
+                _speed_cols(speed),
+                make_disk=make_geodesic_quadrant_disk,
+            )
+            for speed in speeds
+        ]
+        return gpd.GeoDataFrame(
+            {"wind_speed_kt": speeds},
+            geometry=[fix_antimeridian(_wrap_longitudes(g)) for g in geoms],
+            crs="EPSG:4326",
+        )
 
     basin = gdf["basin"].iloc[0] if "basin" in gdf.columns else None
     geo_crs = BASIN_GEO_CRS.get(basin, GEO_CRS_MERIDIAN)
@@ -568,10 +606,7 @@ def calculate_wind_buffers_gdf(
     dicts = []
     geoms = []
     for speed in speeds:
-        speed_quad_cols = tuple(
-            quad_cols_format.format(speed=speed, quad=x) for x in QUADS
-        )
-        geoms.append(build_merged_wind_buffer(gdf_interp, speed_quad_cols))
+        geoms.append(build_merged_wind_buffer(gdf_interp, _speed_cols(speed)))
         dicts.append({"wind_speed_kt": speed})
     result = gpd.GeoDataFrame(dicts, geometry=geoms, crs=proj_crs).to_crs(
         "EPSG:4326"
@@ -579,47 +614,8 @@ def calculate_wind_buffers_gdf(
 
     # After projecting back from the basin-specific lon_wrap CRS, polygons
     # whose tracks crossed the dateline have vertices that shapely
-    # interprets as the wrong way around the globe (180° lon span). Apply
-    # antimeridian.fix_polygon BEFORE make_valid: fix_polygon understands
-    # the dateline-crossing semantics and splits cleanly at ±180.
-    # make_valid first would misinterpret the wraparound as a self-
-    # intersection and slice the polygon along latitude lines to "resolve"
-    # it — producing more parts than necessary.
-    #
-    # Per-part handling: antimeridian.fix_multi_polygon iterates each part
-    # and raises on any degenerate sub-polygon (fewer than 4 unique
-    # vertices after dedup), poisoning the whole MultiPolygon. We iterate
-    # ourselves and fall back to the original part on per-part failure.
-    def _fix_one(p):
-        try:
-            # fix_winding=True silences FixWindingWarning while keeping the
-            # winding-reversal behavior (which is what we want for shapely
-            # polygons that come out clockwise from the projected CRS).
-            return antimeridian.fix_polygon(p, fix_winding=True)
-        except ValueError:
-            # Degenerate (e.g. <4 unique vertices after dedup) — skip
-            # antimeridian and let make_valid below handle anything else.
-            return p
-
-    def _fix(g):
-        if g is None or g.is_empty:
-            return g
-        if g.geom_type == "Polygon":
-            g = _fix_one(g)
-        elif g.geom_type == "MultiPolygon":
-            parts = []
-            for p in g.geoms:
-                fixed = _fix_one(p)
-                if fixed.geom_type == "Polygon":
-                    parts.append(fixed)
-                elif fixed.geom_type == "MultiPolygon":
-                    parts.extend(list(fixed.geoms))
-            g = MultiPolygon(parts) if parts else g
-        if not g.is_valid:
-            g = make_valid(g)
-        return g
-
-    result.geometry = result.geometry.apply(_fix)
+    # interprets as the wrong way around the globe (180° lon span).
+    result.geometry = result.geometry.apply(fix_antimeridian)
     return result
 
 
